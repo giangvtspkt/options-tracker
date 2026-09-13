@@ -55,12 +55,36 @@ HTML_CONTENT = """<!DOCTYPE html>
     <div id="status" class="text-[11px] text-slate-500 mt-1.5 text-right font-medium">Ready</div>
   </div>
 
-  <!-- Spot & Key Levels Bar -->
-  <div id="levels" class="bg-blue-50 border border-blue-200 text-blue-900 p-3 rounded-xl space-y-1 mb-3 font-mono leading-relaxed">
-    Loading market levels...
+  <!-- Spot & Key Levels Table Box -->
+  <div class="mb-3">
+    <h2 class="text-xs font-bold text-blue-950 bg-blue-100/80 p-2.5 rounded-t-lg border-t border-x border-blue-200 flex items-center justify-between">
+      <span>📊 Spot &amp; Key Technical Levels</span>
+      <span class="text-[10px] font-normal text-blue-800">Support (Floor) | Resistance (Ceiling)</span>
+    </h2>
+    <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
+      <table class="w-full text-left" id="levelsTable">
+        <thead class="bg-slate-50 border-b border-slate-200 text-[11px] text-slate-600">
+          <tr>
+            <th class="p-2 border-r font-bold">Ticker</th>
+            <th class="p-2 border-r font-bold">Spot Price</th>
+            <th class="p-2 border-r font-bold text-emerald-800 bg-emerald-50/50">Support Floor (Min)</th>
+            <th class="p-2 border-r font-medium text-slate-600">S1 Pivot</th>
+            <th class="p-2 border-r font-medium text-slate-600">30d Low</th>
+            <th class="p-2 border-r font-bold text-rose-800 bg-rose-50/50">Resistance Ceiling (Max)</th>
+            <th class="p-2 border-r font-medium text-slate-600">R1 Pivot</th>
+            <th class="p-2 font-medium text-slate-600">30d High</th>
+          </tr>
+        </thead>
+        <tbody id="levelsBody">
+          <tr>
+            <td colspan="8" class="p-3 text-center text-slate-400">Loading market levels...</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 
-  <!-- Strategy Guidelines & Technical Notes Card (Identical to Desktop) -->
+  <!-- Strategy Guidelines & Technical Notes Card -->
   <div class="bg-amber-50 border border-amber-200 text-amber-950 p-3 rounded-xl mb-3 space-y-1.5 leading-relaxed shadow-sm">
     <div class="font-bold text-amber-900 flex items-center gap-1">
       <span>📌</span> Technical Definitions &amp; Safe Zone Guidelines:
@@ -110,12 +134,10 @@ HTML_CONTENT = """<!DOCTYPE html>
         if (!res.ok) throw new Error("API error");
         const data = await res.json();
 
-        let levelsHtml = '';
-        for (const [t, m] of Object.entries(data.market)) {
-          levelsHtml += `<div><strong>${t}</strong> Spot: $${m.spot} | Supp: [S1: $${m.s1} / Floor: $${m.floor}] | Res: [R1: $${m.r1} / Ceiling: $${m.ceiling}]</div>`;
-        }
-        document.getElementById('levels').innerHTML = levelsHtml || 'No data found.';
+        // Render Levels Table
+        renderLevelsTable(data.market);
 
+        // Render Puts and Calls Tables
         renderTable('putsBody', data.puts, data.tickers, data.targets);
         renderTable('callsBody', data.calls, data.tickers, data.targets);
         status.innerText = "Updated: " + new Date().toLocaleTimeString();
@@ -124,6 +146,33 @@ HTML_CONTENT = """<!DOCTYPE html>
       } finally {
         btn.disabled = false;
       }
+    }
+
+    function renderLevelsTable(market) {
+      const tbody = document.getElementById('levelsBody');
+      tbody.innerHTML = '';
+
+      const entries = Object.entries(market);
+      if (entries.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" class="p-3 text-center text-slate-400">No ticker data available.</td></tr>`;
+        return;
+      }
+
+      entries.forEach(([ticker, m]) => {
+        const tr = document.createElement('tr');
+        tr.className = "border-b hover:bg-slate-50 text-[11px]";
+        tr.innerHTML = `
+          <td class="p-2 border-r font-bold text-slate-800 bg-slate-50">${ticker}</td>
+          <td class="p-2 border-r font-bold text-blue-700 font-mono">$${m.spot}</td>
+          <td class="p-2 border-r font-bold text-emerald-800 bg-emerald-50/70 font-mono">$${m.support}</td>
+          <td class="p-2 border-r text-slate-600 font-mono">$${m.s1}</td>
+          <td class="p-2 border-r text-slate-600 font-mono">$${m.floor}</td>
+          <td class="p-2 border-r font-bold text-rose-800 bg-rose-50/70 font-mono">$${m.resistance}</td>
+          <td class="p-2 border-r text-slate-600 font-mono">$${m.r1}</td>
+          <td class="p-2 text-slate-600 font-mono">$${m.ceiling}</td>
+        `;
+        tbody.appendChild(tr);
+      });
     }
 
     function renderTable(elementId, results, tickers, targets) {
