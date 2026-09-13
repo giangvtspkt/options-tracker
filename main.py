@@ -76,12 +76,16 @@ HTML_CONTENT = """<!DOCTYPE html>
           </tr>
         </thead>
         <tbody id="levelsBody">
-          <tr>
-            <td colspan="8" class="p-3 text-center text-slate-400">Loading market levels...</td>
-          </tr>
+          <tr><td colspan="8" class="p-3 text-center text-slate-400">Loading market levels...</td></tr>
         </tbody>
       </table>
     </div>
+  </div>
+
+  <!-- Ticker Filter Tabs for Clean Mobile Switching -->
+  <div class="flex items-center gap-1.5 mb-3 overflow-x-auto py-1">
+    <span class="text-[11px] font-bold text-slate-500 mr-1">View:</span>
+    <div id="tickerPills" class="flex gap-1.5"></div>
   </div>
 
   <!-- Strategy Guidelines & Technical Notes Card -->
@@ -120,6 +124,9 @@ HTML_CONTENT = """<!DOCTYPE html>
   </div>
 
   <script>
+    let globalData = null;
+    let selectedTicker = 'ALL';
+
     async function fetchData() {
       const btn = document.getElementById('refreshBtn');
       const status = document.getElementById('status');
@@ -132,14 +139,12 @@ HTML_CONTENT = """<!DOCTYPE html>
       try {
         const res = await fetch(`/api/data?tickers=${encodeURIComponent(tickers)}&delta=${delta}`);
         if (!res.ok) throw new Error("API error");
-        const data = await res.json();
+        globalData = await res.json();
 
-        // Render Levels Table
-        renderLevelsTable(data.market);
+        renderLevelsTable(globalData.market);
+        renderPills(globalData.tickers);
+        renderBothTables();
 
-        // Render Puts and Calls Tables
-        renderTable('putsBody', data.puts, data.tickers, data.targets);
-        renderTable('callsBody', data.calls, data.tickers, data.targets);
         status.innerText = "Updated: " + new Date().toLocaleTimeString();
       } catch (err) {
         status.innerText = "Fetch error";
@@ -148,16 +153,33 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
     }
 
+    function renderPills(tickers) {
+      const pillsContainer = document.getElementById('tickerPills');
+      pillsContainer.innerHTML = '';
+
+      const allBtn = document.createElement('button');
+      allBtn.className = `px-2.5 py-1 rounded-full font-bold text-[11px] border ${selectedTicker === 'ALL' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-700 border-slate-300'}`;
+      allBtn.innerText = 'All Side-by-Side';
+      allBtn.onclick = () => { selectedTicker = 'ALL'; renderPills(tickers); renderBothTables(); };
+      pillsContainer.appendChild(allBtn);
+
+      tickers.forEach(t => {
+        const btn = document.createElement('button');
+        btn.className = `px-2.5 py-1 rounded-full font-bold text-[11px] border ${selectedTicker === t ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-700 border-slate-300'}`;
+        btn.innerText = t;
+        btn.onclick = () => { selectedTicker = t; renderPills(tickers); renderBothTables(); };
+        pillsContainer.appendChild(btn);
+      });
+    }
+
     function renderLevelsTable(market) {
       const tbody = document.getElementById('levelsBody');
       tbody.innerHTML = '';
-
       const entries = Object.entries(market);
       if (entries.length === 0) {
         tbody.innerHTML = `<tr><td colspan="8" class="p-3 text-center text-slate-400">No ticker data available.</td></tr>`;
         return;
       }
-
       entries.forEach(([ticker, m]) => {
         const tr = document.createElement('tr');
         tr.className = "border-b hover:bg-slate-50 text-[11px]";
@@ -175,26 +197,42 @@ HTML_CONTENT = """<!DOCTYPE html>
       });
     }
 
+    function renderBothTables() {
+      if (!globalData) return;
+      const displayTickers = selectedTicker === 'ALL' ? globalData.tickers : [selectedTicker];
+      renderTable('putsBody', globalData.puts, displayTickers, globalData.targets);
+      renderTable('callsBody', globalData.calls, displayTickers, globalData.targets);
+    }
+
     function renderTable(elementId, results, tickers, targets) {
       const tbody = document.getElementById(elementId);
       tbody.innerHTML = '';
 
-      // Main header row
-      let headHtml = `<tr class="bg-slate-200 font-bold border-b text-[11px]"><th class="p-2 border-r">Target</th>`;
-      tickers.forEach(t => { 
-        headHtml += `<th class="p-2 border-r text-center" colspan="5">${t}</th>`; 
+      // Ticker Theme Banners for distinct visual separation
+      const tickerColors = [
+        { header: 'bg-slate-700 text-white', sub: 'bg-slate-100 text-slate-700' },
+        { header: 'bg-indigo-900 text-white', sub: 'bg-indigo-50 text-indigo-950' },
+        { header: 'bg-teal-900 text-white', sub: 'bg-teal-50 text-teal-950' }
+      ];
+
+      // Header Row 1: Ticker titles with strong vertical dividers
+      let headHtml = `<tr class="border-b text-[11px]"><th class="p-2 border-r-2 border-r-slate-400 bg-slate-200">Target</th>`;
+      tickers.forEach((t, i) => { 
+        const c = tickerColors[i % tickerColors.length];
+        headHtml += `<th class="p-2 border-r-2 border-r-slate-400 text-center tracking-wider font-extrabold ${c.header}" colspan="5">${t}</th>`; 
       });
       headHtml += `</tr>`;
 
-      // Sub-header row with compact column labels
-      headHtml += `<tr class="bg-slate-100 border-b text-[10px] text-slate-600 font-semibold"><th class="p-1 border-r"></th>`;
-      tickers.forEach(() => { 
+      // Header Row 2: Sub-columns
+      headHtml += `<tr class="border-b text-[10px] font-semibold"><th class="p-1 border-r-2 border-r-slate-400 bg-slate-100"></th>`;
+      tickers.forEach((_, i) => { 
+        const c = tickerColors[i % tickerColors.length];
         headHtml += `
-          <th class="p-1.5 border-r text-center whitespace-nowrap">Exp</th>
-          <th class="p-1.5 border-r whitespace-nowrap">Strike (% Spot)</th>
-          <th class="p-1.5 border-r whitespace-nowrap">IV %</th>
-          <th class="p-1.5 border-r whitespace-nowrap">Prem</th>
-          <th class="p-1.5 border-r whitespace-nowrap">Ann %</th>
+          <th class="p-1.5 border-r text-center whitespace-nowrap ${c.sub}">Exp</th>
+          <th class="p-1.5 border-r whitespace-nowrap ${c.sub}">Strike (% Spot)</th>
+          <th class="p-1.5 border-r whitespace-nowrap ${c.sub}">IV %</th>
+          <th class="p-1.5 border-r whitespace-nowrap ${c.sub}">Prem</th>
+          <th class="p-1.5 border-r-2 border-r-slate-400 whitespace-nowrap ${c.sub}">Ann %</th>
         `; 
       });
       headHtml += `</tr>`;
@@ -203,10 +241,10 @@ HTML_CONTENT = """<!DOCTYPE html>
       // Table data rows
       targets.forEach(tgt => {
         const isSweetSpot = (tgt === 30 || tgt === 45);
-        let rowClass = isSweetSpot ? 'bg-emerald-50/80 font-semibold' : 'hover:bg-slate-50';
+        let rowClass = isSweetSpot ? 'bg-emerald-50/70 font-semibold' : 'hover:bg-slate-50';
         let badge = isSweetSpot ? '★ ' : '';
 
-        let rowHtml = `<tr class="border-b ${rowClass}"><td class="p-2 border-r whitespace-nowrap font-bold text-slate-700">${badge}${tgt}d</td>`;
+        let rowHtml = `<tr class="border-b ${rowClass}"><td class="p-2 border-r-2 border-r-slate-400 whitespace-nowrap font-bold text-slate-700 bg-slate-50">${badge}${tgt}d</td>`;
         tickers.forEach(t => {
           const item = results[tgt] && results[tgt][t];
           if (item) {
@@ -216,10 +254,10 @@ HTML_CONTENT = """<!DOCTYPE html>
               <td class="p-1.5 border-r whitespace-nowrap ${strikeBg}">$${item.strike} <span class="text-[9px]">(${item.pct_diff})</span></td>
               <td class="p-1.5 border-r whitespace-nowrap text-slate-500 font-mono">${item.iv}%</td>
               <td class="p-1.5 border-r whitespace-nowrap font-bold">$${item.prem}</td>
-              <td class="p-1.5 border-r whitespace-nowrap text-emerald-700 font-bold">${item.ann}%</td>
+              <td class="p-1.5 border-r-2 border-r-slate-400 whitespace-nowrap text-emerald-700 font-bold">${item.ann}%</td>
             `;
           } else {
-            rowHtml += `<td class="p-1.5 border-r text-center text-slate-400" colspan="5">-</td>`;
+            rowHtml += `<td class="p-1.5 border-r-2 border-r-slate-400 text-center text-slate-400" colspan="5">-</td>`;
           }
         });
         rowHtml += `</tr>`;
@@ -303,7 +341,6 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
                 T = max(actual_b_days, 1) / 252.0
                 r = 0.05
                 
-                # Format expiration cleanly as stacked "Oct 17 (21d)"
                 exp_short = datetime.datetime.strptime(closest_exp, "%Y-%m-%d").strftime("%b %d")
                 exp_stacked = f"{exp_short}<br><span class='text-[9px] text-slate-400 font-mono'>({actual_b_days}d)</span>"
 
