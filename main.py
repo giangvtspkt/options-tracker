@@ -186,11 +186,11 @@ HTML_CONTENT = """<!DOCTYPE html>
       });
       headHtml += `</tr>`;
 
-      // Sub-header row with IV included
+      // Sub-header row with compact column labels
       headHtml += `<tr class="bg-slate-100 border-b text-[10px] text-slate-600 font-semibold"><th class="p-1 border-r"></th>`;
       tickers.forEach(() => { 
         headHtml += `
-          <th class="p-1.5 border-r whitespace-nowrap">Exp</th>
+          <th class="p-1.5 border-r text-center whitespace-nowrap">Exp</th>
           <th class="p-1.5 border-r whitespace-nowrap">Strike (% Spot)</th>
           <th class="p-1.5 border-r whitespace-nowrap">IV %</th>
           <th class="p-1.5 border-r whitespace-nowrap">Prem</th>
@@ -212,7 +212,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           if (item) {
             const strikeBg = item.is_safe ? 'bg-green-200 text-green-900 font-bold' : '';
             rowHtml += `
-              <td class="p-1.5 border-r whitespace-nowrap text-[11px] text-slate-600">${item.exp}</td>
+              <td class="p-1 border-r text-center leading-tight text-[10px] text-slate-700">${item.exp}</td>
               <td class="p-1.5 border-r whitespace-nowrap ${strikeBg}">$${item.strike} <span class="text-[9px]">(${item.pct_diff})</span></td>
               <td class="p-1.5 border-r whitespace-nowrap text-slate-500 font-mono">${item.iv}%</td>
               <td class="p-1.5 border-r whitespace-nowrap font-bold">$${item.prem}</td>
@@ -302,6 +302,10 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
 
                 T = max(actual_b_days, 1) / 252.0
                 r = 0.05
+                
+                # Format expiration cleanly as stacked "Oct 17 (21d)"
+                exp_short = datetime.datetime.strptime(closest_exp, "%Y-%m-%d").strftime("%b %d")
+                exp_stacked = f"{exp_short}<br><span class='text-[9px] text-slate-400 font-mono'>({actual_b_days}d)</span>"
 
                 # Puts
                 best_put = None
@@ -319,7 +323,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
                     ann_pct = yield_pct * 252 / actual_b_days
                     pct_diff = ((best_put['strike'] - spot_price) / spot_price) * 100
                     results_puts[target][ticker] = {
-                        "exp": f"{closest_exp} ({actual_b_days}bd)",
+                        "exp": exp_stacked,
                         "strike": round(best_put['strike'], 2),
                         "pct_diff": f"{pct_diff:+.1f}%",
                         "iv": round(best_put['impliedVolatility'] * 100, 1),
@@ -344,7 +348,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
                     ann_pct = yield_pct * 252 / actual_b_days
                     pct_diff = ((best_call['strike'] - spot_price) / spot_price) * 100
                     results_calls[target][ticker] = {
-                        "exp": f"{closest_exp} ({actual_b_days}bd)",
+                        "exp": exp_stacked,
                         "strike": round(best_call['strike'], 2),
                         "pct_diff": f"{pct_diff:+.1f}%",
                         "iv": round(best_call['impliedVolatility'] * 100, 1),
