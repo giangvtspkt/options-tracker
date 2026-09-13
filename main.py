@@ -1,12 +1,10 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 import yfinance as yf
 import math
 import datetime
 
 app = FastAPI()
-templates = Jinja2Templates(directory="templates")
 
 def norm_cdf(x):
     return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
@@ -30,12 +28,138 @@ def count_business_days(start_date, end_date):
         curr += datetime.timedelta(days=1)
     return max(days, 1)
 
+HTML_CONTENT = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Options Tracker</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-100 text-slate-800 p-3 font-sans">
+  <div class="bg-white p-4 rounded-xl shadow-sm mb-3 border border-slate-200">
+    <div class="grid grid-cols-2 gap-2 mb-2">
+      <div>
+        <label class="text-xs font-bold text-slate-500">Tickers</label>
+        <input id="tickers" type="text" value="IREN, RKLB" class="w-full border rounded p-2 text-sm uppercase">
+      </div>
+      <div>
+        <label class="text-xs font-bold text-slate-500">Delta</label>
+        <input id="delta" type="number" step="0.01" value="0.15" class="w-full border rounded p-2 text-sm">
+      </div>
+    </div>
+    <button onclick="fetchData()" id="refreshBtn" class="bg-blue-600 active:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg text-sm w-full mt-2">
+      Refresh Data
+    </button>
+    <div id="status" class="text-xs text-slate-500 mt-2 text-right">Ready</div>
+  </div>
+
+  <div id="levels" class="bg-blue-50 border border-blue-200 text-blue-900 p-3 rounded-xl text-xs space-y-1 mb-3">
+    Loading market levels...
+  </div>
+
+  <div class="mb-4">
+    <h2 class="text-sm font-bold text-sky-900 bg-sky-100 p-2 rounded-t-lg border-t border-x border-sky-200">
+      📉 Cash-Secured Puts (Green = Strike &lt; Support)
+    </h2>
+    <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
+      <table class="w-full text-xs text-left" id="putsTable">
+        <tbody id="putsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="mb-6">
+    <h2 class="text-sm font-bold text-amber-900 bg-amber-100 p-2 rounded-t-lg border-t border-x border-amber-200">
+      📈 Covered Calls (Green = Strike &gt; Resistance)
+    </h2>
+    <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
+      <table class="w-full text-xs text-left" id="callsTable">
+        <tbody id="callsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    async function fetchData() {
+      const btn = document.getElementById('refreshBtn');
+      const status = document.getElementById('status');
+      btn.disabled = true;
+      status.innerText = "Fetching quotes...";
+
+      const tickers = document.getElementById('tickers').value;
+      const delta = document.getElementById('delta').value;
+
+      try {
+        const res = await fetch(`/api/data?tickers=${encodeURIComponent(tickers)}&delta=${delta}`);
+        if (!res.ok) throw new Error("API error");
+        const data = await res.json();
+
+        let levelsHtml = '';
+        for (const [t, m] of Object.entries(data.market)) {
+          levelsHtml += `<div><strong>${t}</strong>: $${m.spot} | Supp: $${m.support} (S1: $${m.s1} / Flr: $${m.floor}) | Res: $${m.resistance} (R1: $${m.r1} / Ceil: $${m.ceiling})</div>`;
+        }
+        document.getElementById('levels').innerHTML = levelsHtml || 'No data found.';
+
+        renderTable('putsBody', data.puts, data.tickers, data.targets);
+        renderTable('callsBody', data.calls, data.tickers, data.targets);
+        status.innerText = "Updated: " + new Date().toLocaleTimeString();
+      } catch (err) {
+        status.innerText = "Fetch error";
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function renderTable(elementId, results, tickers, targets) {
+      const tbody = document.getElementById(elementId);
+      tbody.innerHTML = '';
+
+      let headHtml = `<tr class="bg-slate-200 font-bold border-b text-[11px]"><th class="p-2">Target</th>`;
+      tickers.forEach(t => { headHtml += `<th class="p-2 border-l" colspan="4">${t}</th>`; });
+      headHtml += `</tr><tr class="bg-slate-100 border-b text-[10px] text-slate-600"><th class="p-1"></th>`;
+      tickers.forEach(() => { headHtml += `<th class="p-1 border-l">Exp</th><th class="p-1">Strike</th><th class="p-1">Prem</th><th class="p-1">Ann%</th>`; });
+      headHtml += `</tr>`;
+      tbody.innerHTML += headHtml;
+
+      targets.forEach(tgt => {
+        const isSweetSpot = (tgt === 30 || tgt === 45);
+        let rowClass = isSweetSpot ? 'bg-emerald-50/70 font-semibold' : 'hover:bg-slate-50';
+        let badge = isSweetSpot ? '★ ' : '';
+
+        let rowHtml = `<tr class="border-b ${rowClass}"><td class="p-2 whitespace-nowrap">${badge}${tgt}d</td>`;
+        tickers.forEach(t => {
+          const item = results[tgt] && results[tgt][t];
+          if (item) {
+            const strikeBg = item.is_safe ? 'bg-green-200 text-green-900 font-bold' : '';
+            rowHtml += `
+              <td class="p-1 border-l whitespace-nowrap text-[10px]">${item.exp}</td>
+              <td class="p-1 whitespace-nowrap ${strikeBg}">$${item.strike} <span class="text-[9px]">(${item.pct_diff})</span></td>
+              <td class="p-1 whitespace-nowrap">$${item.prem}</td>
+              <td class="p-1 whitespace-nowrap text-emerald-700 font-bold">${item.ann}%</td>
+            `;
+          } else {
+            rowHtml += `<td class="p-1 border-l text-center text-slate-400" colspan="4">-</td>`;
+          }
+        });
+        rowHtml += `</tr>`;
+        tbody.innerHTML += rowHtml;
+      });
+    }
+
+    fetchData();
+    setInterval(fetchData, 60000);
+  </script>
+</body>
+</html>
+"""
+
 @app.get("/api/data")
 def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
     ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
     target_periods = [7, 14, 30, 45, 60, 90]
     today = datetime.date.today()
-
+    
     market_data = {}
     results_puts = {t: {} for t in target_periods}
     results_calls = {t: {} for t in target_periods}
@@ -99,7 +223,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
                 T = max(actual_b_days, 1) / 252.0
                 r = 0.05
 
-                # Put selection
+                # Puts
                 best_put = None
                 min_p_diff = float("inf")
                 for _, row in puts.iterrows():
@@ -124,7 +248,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
                         "is_safe": best_put['strike'] < market_data[ticker]["support"]
                     }
 
-                # Call selection
+                # Calls
                 best_call = None
                 min_c_diff = float("inf")
                 for _, row in calls.iterrows():
@@ -158,5 +282,5 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
     }
 
 @app.get("/", response_class=HTMLResponse)
-def render_index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+def render_index():
+    return HTMLResponse(content=HTML_CONTENT)
