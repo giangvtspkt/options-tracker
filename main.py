@@ -33,48 +33,63 @@ HTML_CONTENT = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Options Tracker</title>
+  <title>Options Yield Tracker</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-slate-100 text-slate-800 p-3 font-sans">
-  <div class="bg-white p-4 rounded-xl shadow-sm mb-3 border border-slate-200">
+<body class="bg-slate-100 text-slate-800 p-2.5 sm:p-4 font-sans text-xs">
+  <!-- Controls Card -->
+  <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
     <div class="grid grid-cols-2 gap-2 mb-2">
       <div>
-        <label class="text-xs font-bold text-slate-500">Tickers</label>
-        <input id="tickers" type="text" value="IREN, RKLB" class="w-full border rounded p-2 text-sm uppercase">
+        <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Tickers</label>
+        <input id="tickers" type="text" value="IREN, RKLB" class="w-full border rounded p-2 text-sm uppercase font-semibold">
       </div>
       <div>
-        <label class="text-xs font-bold text-slate-500">Delta</label>
-        <input id="delta" type="number" step="0.01" value="0.15" class="w-full border rounded p-2 text-sm">
+        <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Delta</label>
+        <input id="delta" type="number" step="0.01" value="0.15" class="w-full border rounded p-2 text-sm font-semibold">
       </div>
     </div>
-    <button onclick="fetchData()" id="refreshBtn" class="bg-blue-600 active:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg text-sm w-full mt-2">
+    <button onclick="fetchData()" id="refreshBtn" class="bg-blue-600 active:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg text-sm w-full mt-1">
       Refresh Data
     </button>
-    <div id="status" class="text-xs text-slate-500 mt-2 text-right">Ready</div>
+    <div id="status" class="text-[11px] text-slate-500 mt-1.5 text-right font-medium">Ready</div>
   </div>
 
-  <div id="levels" class="bg-blue-50 border border-blue-200 text-blue-900 p-3 rounded-xl text-xs space-y-1 mb-3">
+  <!-- Spot & Key Levels Bar -->
+  <div id="levels" class="bg-blue-50 border border-blue-200 text-blue-900 p-3 rounded-xl space-y-1 mb-3 font-mono leading-relaxed">
     Loading market levels...
   </div>
 
+  <!-- Strategy Guidelines & Technical Notes Card (Identical to Desktop) -->
+  <div class="bg-amber-50 border border-amber-200 text-amber-950 p-3 rounded-xl mb-3 space-y-1.5 leading-relaxed shadow-sm">
+    <div class="font-bold text-amber-900 flex items-center gap-1">
+      <span>📌</span> Technical Definitions &amp; Safe Zone Guidelines:
+    </div>
+    <p><strong class="text-blue-700">• Key Levels:</strong> S1/Floor = Support floors; R1/Ceiling = Resistance ceilings.</p>
+    <p><strong class="text-emerald-700">• Safe Zone CSP (Puts):</strong> Highlighted in green when Strike &lt; Support/Floor (safely cushioned below the technical support floor).</p>
+    <p><strong class="text-rose-700">• Safe Zone CC (Calls):</strong> Highlighted in green when Strike &gt; Resistance/Ceiling (safely above resistance to keep shares and maximize upside buffer).</p>
+    <p><strong class="text-sky-700">• Optimal Expiration:</strong> The 30-45 Day target row is highlighted as the primary sweet spot for theta decay.</p>
+  </div>
+
+  <!-- Puts Table -->
   <div class="mb-4">
-    <h2 class="text-sm font-bold text-sky-900 bg-sky-100 p-2 rounded-t-lg border-t border-x border-sky-200">
-      📉 Cash-Secured Puts (Green = Strike &lt; Support)
+    <h2 class="text-xs font-bold text-sky-900 bg-sky-100 p-2.5 rounded-t-lg border-t border-x border-sky-200">
+      📉 Cash-Secured Puts (Green = Strike &lt; Support/Floor)
     </h2>
     <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
-      <table class="w-full text-xs text-left" id="putsTable">
+      <table class="w-full text-left" id="putsTable">
         <tbody id="putsBody"></tbody>
       </table>
     </div>
   </div>
 
+  <!-- Calls Table -->
   <div class="mb-6">
-    <h2 class="text-sm font-bold text-amber-900 bg-amber-100 p-2 rounded-t-lg border-t border-x border-amber-200">
-      📈 Covered Calls (Green = Strike &gt; Resistance)
+    <h2 class="text-xs font-bold text-amber-900 bg-amber-100 p-2.5 rounded-t-lg border-t border-x border-amber-200">
+      📈 Covered Calls (Green = Strike &gt; Resistance/Ceiling)
     </h2>
     <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
-      <table class="w-full text-xs text-left" id="callsTable">
+      <table class="w-full text-left" id="callsTable">
         <tbody id="callsBody"></tbody>
       </table>
     </div>
@@ -85,7 +100,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       const btn = document.getElementById('refreshBtn');
       const status = document.getElementById('status');
       btn.disabled = true;
-      status.innerText = "Fetching quotes...";
+      status.innerText = "Fetching live quotes...";
 
       const tickers = document.getElementById('tickers').value;
       const delta = document.getElementById('delta').value;
@@ -97,7 +112,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         let levelsHtml = '';
         for (const [t, m] of Object.entries(data.market)) {
-          levelsHtml += `<div><strong>${t}</strong>: $${m.spot} | Supp: $${m.support} (S1: $${m.s1} / Flr: $${m.floor}) | Res: $${m.resistance} (R1: $${m.r1} / Ceil: $${m.ceiling})</div>`;
+          levelsHtml += `<div><strong>${t}</strong> Spot: $${m.spot} | Supp: [S1: $${m.s1} / Floor: $${m.floor}] | Res: [R1: $${m.r1} / Ceiling: $${m.ceiling}]</div>`;
         }
         document.getElementById('levels').innerHTML = levelsHtml || 'No data found.';
 
@@ -115,31 +130,47 @@ HTML_CONTENT = """<!DOCTYPE html>
       const tbody = document.getElementById(elementId);
       tbody.innerHTML = '';
 
-      let headHtml = `<tr class="bg-slate-200 font-bold border-b text-[11px]"><th class="p-2">Target</th>`;
-      tickers.forEach(t => { headHtml += `<th class="p-2 border-l" colspan="4">${t}</th>`; });
-      headHtml += `</tr><tr class="bg-slate-100 border-b text-[10px] text-slate-600"><th class="p-1"></th>`;
-      tickers.forEach(() => { headHtml += `<th class="p-1 border-l">Exp</th><th class="p-1">Strike</th><th class="p-1">Prem</th><th class="p-1">Ann%</th>`; });
+      // Main header row
+      let headHtml = `<tr class="bg-slate-200 font-bold border-b text-[11px]"><th class="p-2 border-r">Target</th>`;
+      tickers.forEach(t => { 
+        headHtml += `<th class="p-2 border-r text-center" colspan="5">${t}</th>`; 
+      });
+      headHtml += `</tr>`;
+
+      // Sub-header row with IV included
+      headHtml += `<tr class="bg-slate-100 border-b text-[10px] text-slate-600 font-semibold"><th class="p-1 border-r"></th>`;
+      tickers.forEach(() => { 
+        headHtml += `
+          <th class="p-1.5 border-r whitespace-nowrap">Exp</th>
+          <th class="p-1.5 border-r whitespace-nowrap">Strike (% Spot)</th>
+          <th class="p-1.5 border-r whitespace-nowrap">IV %</th>
+          <th class="p-1.5 border-r whitespace-nowrap">Prem</th>
+          <th class="p-1.5 border-r whitespace-nowrap">Ann %</th>
+        `; 
+      });
       headHtml += `</tr>`;
       tbody.innerHTML += headHtml;
 
+      // Table data rows
       targets.forEach(tgt => {
         const isSweetSpot = (tgt === 30 || tgt === 45);
-        let rowClass = isSweetSpot ? 'bg-emerald-50/70 font-semibold' : 'hover:bg-slate-50';
+        let rowClass = isSweetSpot ? 'bg-emerald-50/80 font-semibold' : 'hover:bg-slate-50';
         let badge = isSweetSpot ? '★ ' : '';
 
-        let rowHtml = `<tr class="border-b ${rowClass}"><td class="p-2 whitespace-nowrap">${badge}${tgt}d</td>`;
+        let rowHtml = `<tr class="border-b ${rowClass}"><td class="p-2 border-r whitespace-nowrap font-bold text-slate-700">${badge}${tgt}d</td>`;
         tickers.forEach(t => {
           const item = results[tgt] && results[tgt][t];
           if (item) {
             const strikeBg = item.is_safe ? 'bg-green-200 text-green-900 font-bold' : '';
             rowHtml += `
-              <td class="p-1 border-l whitespace-nowrap text-[10px]">${item.exp}</td>
-              <td class="p-1 whitespace-nowrap ${strikeBg}">$${item.strike} <span class="text-[9px]">(${item.pct_diff})</span></td>
-              <td class="p-1 whitespace-nowrap">$${item.prem}</td>
-              <td class="p-1 whitespace-nowrap text-emerald-700 font-bold">${item.ann}%</td>
+              <td class="p-1.5 border-r whitespace-nowrap text-[11px] text-slate-600">${item.exp}</td>
+              <td class="p-1.5 border-r whitespace-nowrap ${strikeBg}">$${item.strike} <span class="text-[9px]">(${item.pct_diff})</span></td>
+              <td class="p-1.5 border-r whitespace-nowrap text-slate-500 font-mono">${item.iv}%</td>
+              <td class="p-1.5 border-r whitespace-nowrap font-bold">$${item.prem}</td>
+              <td class="p-1.5 border-r whitespace-nowrap text-emerald-700 font-bold">${item.ann}%</td>
             `;
           } else {
-            rowHtml += `<td class="p-1 border-l text-center text-slate-400" colspan="4">-</td>`;
+            rowHtml += `<td class="p-1.5 border-r text-center text-slate-400" colspan="5">-</td>`;
           }
         });
         rowHtml += `</tr>`;
