@@ -16,9 +16,15 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
 
-# In-memory fast cache (120 seconds)
+# In-memory fast cache (3 minutes)
 DATA_CACHE = {}
-CACHE_TTL = 120
+CACHE_TTL = 180
+
+# Configure custom headers so Yahoo Finance doesn't throttle Render
+YF_SESSION = requests.Session()
+YF_SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+})
 
 def norm_cdf(x):
     return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
@@ -57,7 +63,7 @@ def get_positions_from_github():
         "Accept": "application/vnd.github.v3+json"
     }
     try:
-        r = requests.get(url, headers=headers, timeout=4)
+        r = requests.get(url, headers=headers, timeout=3)
         if r.status_code == 200:
             data = r.json()
             content = base64.b64decode(data['content']).decode('utf-8')
@@ -81,7 +87,7 @@ def save_positions_to_github(positions):
     if sha:
         payload["sha"] = sha
     try:
-        res = requests.put(url, headers=headers, json=payload, timeout=4)
+        res = requests.put(url, headers=headers, json=payload, timeout=3)
         return res.status_code in [200, 201]
     except Exception:
         return False
@@ -260,7 +266,9 @@ HTML_CONTENT = """<!DOCTYPE html>
     </h2>
     <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
       <table class="w-full text-left" id="putsTable">
-        <tbody id="putsBody"></tbody>
+        <tbody id="putsBody">
+          <tr><td class="p-4 text-center text-slate-400">Fetching options data...</td></tr>
+        </tbody>
       </table>
     </div>
   </div>
@@ -271,7 +279,9 @@ HTML_CONTENT = """<!DOCTYPE html>
     </h2>
     <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
       <table class="w-full text-left" id="callsTable">
-        <tbody id="callsBody"></tbody>
+        <tbody id="callsBody">
+          <tr><td class="p-4 text-center text-slate-400">Fetching options data...</td></tr>
+        </tbody>
       </table>
     </div>
   </div>
@@ -370,7 +380,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         }
       });
 
-      // Sort by Exp first (earliest to latest), then alphabetically by Ticker
       filteredPositions.sort((a, b) => {
         const dateDiff = new Date(a.exp) - new Date(b.exp);
         if (dateDiff !== 0) return dateDiff;
@@ -644,6 +653,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       });
     }
 
+    // Immediate local position loading (0ms)
     loadCloudPositions();
     fetchData();
     setInterval(fetchData, 60000);
@@ -693,7 +703,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
 
     for ticker in ticker_list:
         try:
-            tkr = yf.Ticker(ticker)
+            tkr = yf.Ticker(ticker, session=YF_SESSION)
             spot_price = tkr.fast_info.get("lastPrice", 0)
             if not spot_price or spot_price <= 0:
                 hist_1d = tkr.history(period="1d")
@@ -731,7 +741,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
             "resistance": round(max(r1, rolling_resistance), 2)
         }
 
-        # Match target to expiration date
+        # Match closest target periods to expiration dates
         target_to_exp = {}
         for target in target_periods:
             closest = None
@@ -750,7 +760,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
             if closest:
                 target_to_exp[target] = closest
 
-        # Download option chain for UNIQUE dates only (fast single-fetch)
+        # Download option chain for UNIQUE dates only with browser user-agent
         unique_exps = set(target_to_exp.values())
         loaded_chains = {}
         for exp in unique_exps:
@@ -759,7 +769,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
             except Exception:
                 continue
 
-        # Evaluate Greeks and format rows
+        # Calculate Greeks and strikes from cached chains
         for target, exp in target_to_exp.items():
             if exp not in loaded_chains:
                 continue
