@@ -100,6 +100,7 @@ HTML_CONTENT = """<!DOCTYPE html>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-100 text-slate-800 p-2.5 sm:p-4 font-sans text-xs">
+  <!-- Controls Card -->
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
     <div class="grid grid-cols-2 gap-2 mb-2">
       <div>
@@ -117,17 +118,34 @@ HTML_CONTENT = """<!DOCTYPE html>
     <div id="status" class="text-[11px] text-slate-500 mt-1.5 text-right font-medium">Ready</div>
   </div>
 
-  <!-- Positions Box -->
+  <!-- Positions & P/L Summary Box -->
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
-    <div class="flex items-center justify-between mb-2">
+    <div class="flex items-center justify-between mb-2.5">
       <h2 class="text-xs font-bold text-slate-800 flex items-center gap-1">
-        <span>☁️</span> Active Positions
+        <span>💼</span> Portfolio Performance &amp; Positions
       </h2>
       <button onclick="toggleAddForm()" id="toggleFormBtn" class="bg-slate-800 text-white text-[10px] font-bold px-2.5 py-1 rounded-md">
         + Add Position
       </button>
     </div>
 
+    <!-- P/L Summary Metric Cards -->
+    <div class="grid grid-cols-3 gap-2 mb-3">
+      <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
+        <div class="text-[10px] font-bold text-slate-500">Realized P/L</div>
+        <div id="realizedPL" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
+      </div>
+      <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
+        <div class="text-[10px] font-bold text-slate-500">Unrealized P/L</div>
+        <div id="unrealizedPL" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
+      </div>
+      <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
+        <div class="text-[10px] font-bold text-slate-500">Win Rate</div>
+        <div id="winRate" class="text-xs font-extrabold font-mono text-slate-700">0%</div>
+      </div>
+    </div>
+
+    <!-- Input Form -->
     <div id="positionForm" class="hidden bg-slate-50 p-2.5 rounded-lg border border-slate-200 mb-3 space-y-2">
       <div class="grid grid-cols-3 gap-2">
         <div>
@@ -176,6 +194,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- Positions Table -->
     <div class="overflow-x-auto border border-slate-200 rounded-lg">
       <table class="w-full text-left text-[10px]">
         <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold">
@@ -183,13 +202,14 @@ HTML_CONTENT = """<!DOCTYPE html>
             <th class="p-1.5 border-r">Pos</th>
             <th class="p-1.5 border-r">Contract</th>
             <th class="p-1.5 border-r">Exp</th>
-            <th class="p-1.5 border-r">Entry</th>
+            <th class="p-1.5 border-r">Prem</th>
+            <th class="p-1.5 border-r">P/L ($)</th>
             <th class="p-1.5 border-r">Status</th>
             <th class="p-1.5 text-center">Action</th>
           </tr>
         </thead>
         <tbody id="positionsBody">
-          <tr><td colspan="6" class="p-2 text-center text-slate-400">Loading positions...</td></tr>
+          <tr><td colspan="7" class="p-2 text-center text-slate-400">Loading positions...</td></tr>
         </tbody>
       </table>
     </div>
@@ -254,6 +274,7 @@ HTML_CONTENT = """<!DOCTYPE html>
   <script>
     let globalData = null;
     let selectedTicker = 'ALL';
+    let cloudPositions = [];
 
     function toggleAddForm() {
       document.getElementById('positionForm').classList.toggle('hidden');
@@ -262,10 +283,10 @@ HTML_CONTENT = """<!DOCTYPE html>
     async function loadCloudPositions() {
       try {
         const res = await fetch('/api/positions');
-        const positions = await res.json();
-        renderPositions(positions);
+        cloudPositions = await res.json();
+        renderPositionsAndPL();
       } catch (e) {
-        document.getElementById('positionsBody').innerHTML = '<tr><td colspan="6" class="p-2 text-center text-slate-400">No active positions saved.</td></tr>';
+        document.getElementById('positionsBody').innerHTML = '<tr><td colspan="7" class="p-2 text-center text-slate-400">No active positions saved.</td></tr>';
       }
     }
 
@@ -303,32 +324,104 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (res.ok) loadCloudPositions();
     }
 
-    function renderPositions(positions) {
+    function renderPositionsAndPL() {
       const tbody = document.getElementById('positionsBody');
-      if (!positions || positions.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="p-2 text-center text-slate-400">No active positions.</td></tr>';
+      if (!cloudPositions || cloudPositions.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="p-2 text-center text-slate-400">No active positions.</td></tr>';
+        document.getElementById('realizedPL').innerText = "$0.00";
+        document.getElementById('unrealizedPL').innerText = "$0.00";
+        document.getElementById('winRate').innerText = "0%";
         return;
       }
+
       tbody.innerHTML = '';
-      positions.forEach(p => {
-        const tr = document.createElement('tr');
-        tr.className = 'border-b hover:bg-slate-50';
+      const todayStr = new Date().toISOString().split('T')[0];
+
+      let totalRealized = 0;
+      let totalUnrealized = 0;
+      let closedWins = 0;
+      let closedTotal = 0;
+
+      cloudPositions.forEach(p => {
+        const isExpired = p.exp < todayStr;
+        const spot = (globalData && globalData.market && globalData.market[p.ticker]) 
+          ? globalData.market[p.ticker].spot 
+          : null;
+
+        let pl = 0;
+        let statusHtml = '';
+
+        // Auto Execution / Settlement Logic
+        if (isExpired) {
+          closedTotal++;
+          if (p.action === 'SELL') {
+            // Option Seller logic: Max profit is 100% of premium collected if expires OTM
+            if ((p.type === 'PUT' && (!spot || spot >= p.strike)) || (p.type === 'CALL' && (!spot || spot <= p.strike))) {
+              pl = p.prem * 100 * p.qty; // Full profit kept
+              closedWins++;
+              statusHtml = '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">Expired (Win)</span>';
+            } else {
+              // Assigned with loss
+              const intrinsic = p.type === 'PUT' ? Math.max(p.strike - spot, 0) : Math.max(spot - p.strike, 0);
+              pl = (p.prem - intrinsic) * 100 * p.qty;
+              if (pl >= 0) closedWins++;
+              statusHtml = '<span class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">Assigned</span>';
+            }
+          } else {
+            // Buyer logic
+            const intrinsic = p.type === 'CALL' ? Math.max((spot || 0) - p.strike, 0) : Math.max(p.strike - (spot || 0), 0);
+            pl = (intrinsic - p.prem) * 100 * p.qty;
+            if (pl > 0) closedWins++;
+            statusHtml = '<span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-bold">Closed</span>';
+          }
+          totalRealized += pl;
+        } else {
+          // Open active contract
+          if (p.action === 'SELL') {
+            pl = p.prem * 100 * p.qty; // Captured premium buffer
+            statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
+          } else {
+            pl = 0;
+            statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
+          }
+          totalUnrealized += pl;
+        }
+
+        const plColor = pl >= 0 ? 'text-emerald-700' : 'text-rose-700';
+        const plPrefix = pl >= 0 ? '+$' : '-$';
+        const plDisplay = `${plPrefix}${Math.abs(pl).toFixed(2)}`;
+
         const actionBadge = p.action === 'SELL'
           ? '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">SELL</span>'
           : '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">BUY</span>';
 
+        const tr = document.createElement('tr');
+        tr.className = 'border-b hover:bg-slate-50';
         tr.innerHTML = `
           <td class="p-1.5 border-r whitespace-nowrap">${actionBadge}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-bold">${p.ticker} $${p.strike} ${p.type} (x${p.qty})</td>
           <td class="p-1.5 border-r whitespace-nowrap text-slate-600 font-mono">${p.exp}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
-          <td class="p-1.5 border-r whitespace-nowrap text-emerald-600 font-bold">Active</td>
+          <td class="p-1.5 border-r whitespace-nowrap font-mono font-bold ${plColor}">${plDisplay}</td>
+          <td class="p-1.5 border-r whitespace-nowrap">${statusHtml}</td>
           <td class="p-1.5 text-center">
             <button onclick="deletePosition(${p.id})" class="text-rose-600 hover:text-rose-800 font-bold">✕</button>
           </td>
         `;
         tbody.appendChild(tr);
       });
+
+      // Update Top Summary Cards
+      const realEl = document.getElementById('realizedPL');
+      realEl.innerText = `${totalRealized >= 0 ? '+$' : '-$'}${Math.abs(totalRealized).toFixed(2)}`;
+      realEl.className = `text-xs font-extrabold font-mono ${totalRealized >= 0 ? 'text-emerald-700' : 'text-rose-700'}`;
+
+      const unrealEl = document.getElementById('unrealizedPL');
+      unrealEl.innerText = `${totalUnrealized >= 0 ? '+$' : '-$'}${Math.abs(totalUnrealized).toFixed(2)}`;
+      unrealEl.className = `text-xs font-extrabold font-mono ${totalUnrealized >= 0 ? 'text-emerald-700' : 'text-rose-700'}`;
+
+      const winRate = closedTotal > 0 ? Math.round((closedWins / closedTotal) * 100) : 100;
+      document.getElementById('winRate').innerText = `${winRate}% (${closedWins}/${closedTotal})`;
     }
 
     async function fetchData() {
@@ -348,6 +441,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         renderLevelsTable(globalData.market);
         renderPills(globalData.tickers);
         renderBothTables();
+        renderPositionsAndPL();
 
         status.innerText = "Updated: " + new Date().toLocaleTimeString();
       } catch (err) {
@@ -445,8 +539,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         let badge = isSweetSpot ? '★ ' : '';
 
         let rowHtml = `<tr class="border-b ${rowClass}"><td class="p-2 border-r-2 border-r-slate-400 whitespace-nowrap font-bold text-slate-700 bg-slate-50">${badge}${tgt}d</td>`;
-        
-        // String conversion fallback for targets
         const targetKey = String(tgt);
 
         tickers.forEach(t => {
