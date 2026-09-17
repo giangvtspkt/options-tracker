@@ -1,10 +1,19 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 import yfinance as yf
 import math
 import datetime
+import os
+import json
+import base64
+import requests
 
 app = FastAPI()
+
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_REPO = os.getenv("GITHUB_REPO")
+GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
 
 def norm_cdf(x):
     return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
@@ -28,16 +37,63 @@ def count_business_days(start_date, end_date):
         curr += datetime.timedelta(days=1)
     return max(days, 1)
 
+def get_positions_from_github():
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return [], None
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE_PATH}"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    r = requests.get(url, headers=headers)
+    if r.status_code == 200:
+        data = r.json()
+        content = base64.b64decode(data['content']).decode('utf-8')
+        try:
+            return json.loads(content), data.get('sha')
+        except:
+            return [], data.get('sha')
+    return [], None
+
+def save_positions_to_github(positions):
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return False
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE_PATH}"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    _, sha = get_positions_from_github()
+    content_str = json.dumps(positions, indent=2)
+    encoded = base64.b64encode(content_str.encode('utf-8')).decode('utf-8')
+    payload = {
+        "message": "Update positions storage",
+        "content": encoded
+    }
+    if sha:
+        payload["sha"] = sha
+    res = requests.put(url, headers=headers, json=payload)
+    return res.status_code in [200, 201]
+
+class PositionModel(BaseModel):
+    id: int
+    action: str
+    type: str
+    ticker: str
+    strike: float
+    prem: float
+    qty: int
+    exp: str
+
 HTML_CONTENT = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Options Yield Tracker</title>
+  <title>Options Tracker (Cloud Sync)</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-100 text-slate-800 p-2.5 sm:p-4 font-sans text-xs">
-  <!-- Controls Card -->
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
     <div class="grid grid-cols-2 gap-2 mb-2">
       <div>
@@ -55,7 +111,83 @@ HTML_CONTENT = """<!DOCTYPE html>
     <div id="status" class="text-[11px] text-slate-500 mt-1.5 text-right font-medium">Ready</div>
   </div>
 
-  <!-- Spot & Key Levels Table Box -->
+  <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
+    <div class="flex items-center justify-between mb-2">
+      <h2 class="text-xs font-bold text-slate-800 flex items-center gap-1">
+        <span>☁️</span> Active Positions (GitHub Synced)
+      </h2>
+      <button onclick="toggleAddForm()" id="toggleFormBtn" class="bg-slate-800 text-white text-[10px] font-bold px-2.5 py-1 rounded-md">
+        + Add Position
+      </button>
+    </div>
+
+    <div id="positionForm" class="hidden bg-slate-50 p-2.5 rounded-lg border border-slate-200 mb-3 space-y-2">
+      <div class="grid grid-cols-3 gap-2">
+        <div>
+          <label class="text-[10px] font-bold text-slate-500">Action</label>
+          <select id="posAction" class="w-full border rounded p-1.5 text-xs bg-white">
+            <option value="SELL">Sell (Write)</option>
+            <option value="BUY">Buy (Long)</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-[10px] font-bold text-slate-500">Type</label>
+          <select id="posType" class="w-full border rounded p-1.5 text-xs bg-white">
+            <option value="PUT">PUT (CSP)</option>
+            <option value="CALL">CALL (CC)</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-[10px] font-bold text-slate-500">Ticker</label>
+          <input id="posTicker" type="text" placeholder="IREN" class="w-full border rounded p-1.5 text-xs uppercase font-semibold">
+        </div>
+      </div>
+
+      <div class="grid grid-cols-3 gap-2">
+        <div>
+          <label class="text-[10px] font-bold text-slate-500">Strike ($)</label>
+          <input id="posStrike" type="number" step="0.5" placeholder="40" class="w-full border rounded p-1.5 text-xs">
+        </div>
+        <div>
+          <label class="text-[10px] font-bold text-slate-500">Premium ($)</label>
+          <input id="posPrem" type="number" step="0.01" placeholder="1.25" class="w-full border rounded p-1.5 text-xs">
+        </div>
+        <div>
+          <label class="text-[10px] font-bold text-slate-500">Qty</label>
+          <input id="posQty" type="number" step="1" value="1" class="w-full border rounded p-1.5 text-xs">
+        </div>
+      </div>
+
+      <div>
+        <label class="text-[10px] font-bold text-slate-500">Expiration Date</label>
+        <input id="posExp" type="date" class="w-full border rounded p-1.5 text-xs bg-white">
+      </div>
+
+      <div class="flex gap-2 pt-1">
+        <button onclick="savePosition()" class="bg-emerald-600 active:bg-emerald-700 text-white font-bold py-1.5 px-3 rounded text-xs flex-1">Save to Cloud</button>
+        <button onclick="toggleAddForm()" class="bg-slate-300 text-slate-700 font-bold py-1.5 px-3 rounded text-xs">Cancel</button>
+      </div>
+    </div>
+
+    <div class="overflow-x-auto border border-slate-200 rounded-lg">
+      <table class="w-full text-left text-[10px]">
+        <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold">
+          <tr>
+            <th class="p-1.5 border-r">Pos</th>
+            <th class="p-1.5 border-r">Contract</th>
+            <th class="p-1.5 border-r">Exp</th>
+            <th class="p-1.5 border-r">Entry</th>
+            <th class="p-1.5 border-r">Status</th>
+            <th class="p-1.5 text-center">Action</th>
+          </tr>
+        </thead>
+        <tbody id="positionsBody">
+          <tr><td colspan="6" class="p-2 text-center text-slate-400">Loading positions from GitHub...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <div class="mb-3">
     <h2 class="text-xs font-bold text-blue-950 bg-blue-100/80 p-2.5 rounded-t-lg border-t border-x border-blue-200 flex items-center justify-between">
       <span>📊 Spot &amp; Key Technical Levels</span>
@@ -82,24 +214,11 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Ticker Filter Tabs for Clean Mobile Switching -->
   <div class="flex items-center gap-1.5 mb-3 overflow-x-auto py-1">
     <span class="text-[11px] font-bold text-slate-500 mr-1">View:</span>
     <div id="tickerPills" class="flex gap-1.5"></div>
   </div>
 
-  <!-- Strategy Guidelines & Technical Notes Card -->
-  <div class="bg-amber-50 border border-amber-200 text-amber-950 p-3 rounded-xl mb-3 space-y-1.5 leading-relaxed shadow-sm">
-    <div class="font-bold text-amber-900 flex items-center gap-1">
-      <span>📌</span> Technical Definitions &amp; Safe Zone Guidelines:
-    </div>
-    <p><strong class="text-blue-700">• Key Levels:</strong> S1/Floor = Support floors; R1/Ceiling = Resistance ceilings.</p>
-    <p><strong class="text-emerald-700">• Safe Zone CSP (Puts):</strong> Highlighted in green when Strike &lt; Support/Floor (safely cushioned below the technical support floor).</p>
-    <p><strong class="text-rose-700">• Safe Zone CC (Calls):</strong> Highlighted in green when Strike &gt; Resistance/Ceiling (safely above resistance to keep shares and maximize upside buffer).</p>
-    <p><strong class="text-sky-700">• Optimal Expiration:</strong> The 30-45 Day target row is highlighted as the primary sweet spot for theta decay.</p>
-  </div>
-
-  <!-- Puts Table -->
   <div class="mb-4">
     <h2 class="text-xs font-bold text-sky-900 bg-sky-100 p-2.5 rounded-t-lg border-t border-x border-sky-200">
       📉 Cash-Secured Puts (Green = Strike &lt; Support/Floor)
@@ -111,7 +230,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Calls Table -->
   <div class="mb-6">
     <h2 class="text-xs font-bold text-amber-900 bg-amber-100 p-2.5 rounded-t-lg border-t border-x border-amber-200">
       📈 Covered Calls (Green = Strike &gt; Resistance/Ceiling)
@@ -126,6 +244,82 @@ HTML_CONTENT = """<!DOCTYPE html>
   <script>
     let globalData = null;
     let selectedTicker = 'ALL';
+
+    function toggleAddForm() {
+      document.getElementById('positionForm').classList.toggle('hidden');
+    }
+
+    async function loadCloudPositions() {
+      try {
+        const res = await fetch('/api/positions');
+        const positions = await res.json();
+        renderPositions(positions);
+      } catch (e) {
+        document.getElementById('positionsBody').innerHTML = '<tr><td colspan="6" class="p-2 text-center text-rose-500">Failed loading cloud positions.</td></tr>';
+      }
+    }
+
+    async function savePosition() {
+      const action = document.getElementById('posAction').value;
+      const type = document.getElementById('posType').value;
+      const ticker = document.getElementById('posTicker').value.trim().toUpperCase();
+      const strike = parseFloat(document.getElementById('posStrike').value);
+      const prem = parseFloat(document.getElementById('posPrem').value);
+      const qty = parseInt(document.getElementById('posQty').value) || 1;
+      const exp = document.getElementById('posExp').value;
+
+      if (!ticker || isNaN(strike) || isNaN(prem) || !exp) {
+        alert('Please fill all fields properly.');
+        return;
+      }
+
+      const res = await fetch('/api/positions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: Date.now(), action, type, ticker, strike, prem, qty, exp })
+      });
+
+      if (res.ok) {
+        toggleAddForm();
+        loadCloudPositions();
+      } else {
+        alert('Could not save to GitHub. Check environment variables.');
+      }
+    }
+
+    async function deletePosition(id) {
+      if (!confirm("Delete this position from GitHub?")) return;
+      const res = await fetch(`/api/positions/${id}`, { method: 'DELETE' });
+      if (res.ok) loadCloudPositions();
+    }
+
+    function renderPositions(positions) {
+      const tbody = document.getElementById('positionsBody');
+      if (!positions || positions.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="p-2 text-center text-slate-400">No open positions saved in cloud.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = '';
+      positions.forEach(p => {
+        const tr = document.createElement('tr');
+        tr.className = 'border-b hover:bg-slate-50';
+        const actionBadge = p.action === 'SELL'
+          ? '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">SELL</span>'
+          : '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">BUY</span>';
+
+        tr.innerHTML = `
+          <td class="p-1.5 border-r whitespace-nowrap">${actionBadge}</td>
+          <td class="p-1.5 border-r whitespace-nowrap font-bold">${p.ticker} $${p.strike} ${p.type} (x${p.qty})</td>
+          <td class="p-1.5 border-r whitespace-nowrap text-slate-600 font-mono">${p.exp}</td>
+          <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
+          <td class="p-1.5 border-r whitespace-nowrap text-emerald-600 font-bold">Active</td>
+          <td class="p-1.5 text-center">
+            <button onclick="deletePosition(${p.id})" class="text-rose-600 hover:text-rose-800 font-bold">✕</button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
 
     async function fetchData() {
       const btn = document.getElementById('refreshBtn');
@@ -156,7 +350,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     function renderPills(tickers) {
       const pillsContainer = document.getElementById('tickerPills');
       pillsContainer.innerHTML = '';
-
       const allBtn = document.createElement('button');
       allBtn.className = `px-2.5 py-1 rounded-full font-bold text-[11px] border ${selectedTicker === 'ALL' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-700 border-slate-300'}`;
       allBtn.innerText = 'All Side-by-Side';
@@ -207,15 +400,12 @@ HTML_CONTENT = """<!DOCTYPE html>
     function renderTable(elementId, results, tickers, targets) {
       const tbody = document.getElementById(elementId);
       tbody.innerHTML = '';
-
-      // Ticker Theme Banners for distinct visual separation
       const tickerColors = [
         { header: 'bg-slate-700 text-white', sub: 'bg-slate-100 text-slate-700' },
         { header: 'bg-indigo-900 text-white', sub: 'bg-indigo-50 text-indigo-950' },
         { header: 'bg-teal-900 text-white', sub: 'bg-teal-50 text-teal-950' }
       ];
 
-      // Header Row 1: Ticker titles with strong vertical dividers
       let headHtml = `<tr class="border-b text-[11px]"><th class="p-2 border-r-2 border-r-slate-400 bg-slate-200">Target</th>`;
       tickers.forEach((t, i) => { 
         const c = tickerColors[i % tickerColors.length];
@@ -223,7 +413,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       });
       headHtml += `</tr>`;
 
-      // Header Row 2: Sub-columns
       headHtml += `<tr class="border-b text-[10px] font-semibold"><th class="p-1 border-r-2 border-r-slate-400 bg-slate-100"></th>`;
       tickers.forEach((_, i) => { 
         const c = tickerColors[i % tickerColors.length];
@@ -238,7 +427,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       headHtml += `</tr>`;
       tbody.innerHTML += headHtml;
 
-      // Table data rows
       targets.forEach(tgt => {
         const isSweetSpot = (tgt === 30 || tgt === 45);
         let rowClass = isSweetSpot ? 'bg-emerald-50/70 font-semibold' : 'hover:bg-slate-50';
@@ -265,12 +453,36 @@ HTML_CONTENT = """<!DOCTYPE html>
       });
     }
 
+    loadCloudPositions();
     fetchData();
     setInterval(fetchData, 60000);
   </script>
 </body>
 </html>
 """
+
+@app.get("/api/positions")
+def read_positions():
+    positions, _ = get_positions_from_github()
+    return positions
+
+@app.post("/api/positions")
+def create_position(pos: PositionModel):
+    positions, _ = get_positions_from_github()
+    positions.append(pos.model_dump())
+    success = save_positions_to_github(positions)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to save to GitHub")
+    return {"status": "success"}
+
+@app.delete("/api/positions/{pos_id}")
+def remove_position(pos_id: int):
+    positions, _ = get_positions_from_github()
+    positions = [p for p in positions if p.get("id") != pos_id]
+    success = save_positions_to_github(positions)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to delete from GitHub")
+    return {"status": "success"}
 
 @app.get("/api/data")
 def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
