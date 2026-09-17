@@ -16,9 +16,9 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
 
-# In-memory cache for instant subsequent loads
+# In-memory fast cache (120 seconds)
 DATA_CACHE = {}
-CACHE_TTL = 90
+CACHE_TTL = 120
 
 def norm_cdf(x):
     return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
@@ -57,7 +57,7 @@ def get_positions_from_github():
         "Accept": "application/vnd.github.v3+json"
     }
     try:
-        r = requests.get(url, headers=headers, timeout=5)
+        r = requests.get(url, headers=headers, timeout=4)
         if r.status_code == 200:
             data = r.json()
             content = base64.b64decode(data['content']).decode('utf-8')
@@ -81,7 +81,7 @@ def save_positions_to_github(positions):
     if sha:
         payload["sha"] = sha
     try:
-        res = requests.put(url, headers=headers, json=payload, timeout=5)
+        res = requests.put(url, headers=headers, json=payload, timeout=4)
         return res.status_code in [200, 201]
     except Exception:
         return False
@@ -101,11 +101,10 @@ HTML_CONTENT = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Options Yield & Performance Tracker</title>
+  <title>Options Yield Tracker</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-100 text-slate-800 p-2.5 sm:p-4 font-sans text-xs">
-  <!-- Controls Card -->
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
     <div class="grid grid-cols-2 gap-2 mb-2">
       <div>
@@ -123,7 +122,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     <div id="status" class="text-[11px] text-slate-500 mt-1.5 text-right font-medium">Ready</div>
   </div>
 
-  <!-- Positions & P/L Summary Box -->
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
     <div class="flex items-center justify-between mb-2">
       <h2 class="text-xs font-bold text-slate-800 flex items-center gap-1">
@@ -134,7 +132,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       </button>
     </div>
 
-    <!-- 5 Separated Metric Cards -->
     <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-3">
       <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
         <div class="text-[10px] font-bold text-slate-500">Total Realized</div>
@@ -158,7 +155,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Input Form -->
     <div id="positionForm" class="hidden bg-slate-50 p-2.5 rounded-lg border border-slate-200 mb-3 space-y-2">
       <div class="grid grid-cols-3 gap-2">
         <div>
@@ -202,12 +198,11 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
 
       <div class="flex gap-2 pt-1">
-        <button onclick="savePosition()" class="bg-emerald-600 active:bg-emerald-700 text-white font-bold py-1.5 px-3 rounded text-xs flex-1">Save to Cloud</button>
+        <button onclick="savePosition()" class="bg-emerald-600 active:bg-emerald-700 text-white font-bold py-1.5 px-3 rounded text-xs flex-1">Save</button>
         <button onclick="toggleAddForm()" class="bg-slate-300 text-slate-700 font-bold py-1.5 px-3 rounded text-xs">Cancel</button>
       </div>
     </div>
 
-    <!-- Positions Table -->
     <div class="overflow-x-auto border border-slate-200 rounded-lg">
       <table class="w-full text-left text-[10px]">
         <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold">
@@ -228,7 +223,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Key Levels Box -->
   <div class="mb-3">
     <h2 class="text-xs font-bold text-blue-950 bg-blue-100/80 p-2.5 rounded-t-lg border-t border-x border-blue-200 flex items-center justify-between">
       <span>📊 Spot &amp; Key Technical Levels</span>
@@ -240,10 +234,10 @@ HTML_CONTENT = """<!DOCTYPE html>
           <tr>
             <th class="p-2 border-r font-bold">Ticker</th>
             <th class="p-2 border-r font-bold">Spot Price</th>
-            <th class="p-2 border-r font-bold text-emerald-800 bg-emerald-50/50">Support Floor (Min)</th>
+            <th class="p-2 border-r font-bold text-emerald-800 bg-emerald-50/50">Support Floor</th>
             <th class="p-2 border-r font-medium text-slate-600">S1 Pivot</th>
             <th class="p-2 border-r font-medium text-slate-600">30d Low</th>
-            <th class="p-2 border-r font-bold text-rose-800 bg-rose-50/50">Resistance Ceiling (Max)</th>
+            <th class="p-2 border-r font-bold text-rose-800 bg-rose-50/50">Resistance Ceiling</th>
             <th class="p-2 border-r font-medium text-slate-600">R1 Pivot</th>
             <th class="p-2 font-medium text-slate-600">30d High</th>
           </tr>
@@ -260,7 +254,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     <div id="tickerPills" class="flex gap-1.5"></div>
   </div>
 
-  <!-- Puts Table -->
   <div class="mb-4">
     <h2 class="text-xs font-bold text-sky-900 bg-sky-100 p-2.5 rounded-t-lg border-t border-x border-sky-200">
       📉 Cash-Secured Puts (Green = Strike &lt; Support/Floor)
@@ -272,7 +265,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Calls Table -->
   <div class="mb-6">
     <h2 class="text-xs font-bold text-amber-900 bg-amber-100 p-2.5 rounded-t-lg border-t border-x border-amber-200">
       📈 Covered Calls (Green = Strike &gt; Resistance/Ceiling)
@@ -345,8 +337,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (res.ok) {
         toggleAddForm();
         loadCloudPositions();
-      } else {
-        alert('Could not save position.');
       }
     }
 
@@ -370,25 +360,22 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
 
       const filteredPositions = [];
-      let pruneNeeded = false;
-
       cloudPositions.forEach(p => {
         const parts = p.exp.split('-');
         const pYear = parseInt(parts[0], 10);
         const pMonth = parseInt(parts[1], 10) - 1;
 
-        if (pYear < currentYear || (pYear === currentYear && pMonth < currentMonth)) {
-          pruneNeeded = true;
-        } else {
+        if (pYear > currentYear || (pYear === currentYear && pMonth >= currentMonth)) {
           filteredPositions.push(p);
         }
       });
 
-      if (pruneNeeded) {
-        fetch('/api/positions/prune-old', { credentials: 'omit' }).catch(() => {});
-      }
-
-      filteredPositions.sort((a, b) => new Date(a.exp) - new Date(b.exp));
+      // Sort by Exp first (earliest to latest), then alphabetically by Ticker
+      filteredPositions.sort((a, b) => {
+        const dateDiff = new Date(a.exp) - new Date(b.exp);
+        if (dateDiff !== 0) return dateDiff;
+        return a.ticker.localeCompare(b.ticker);
+      });
 
       if (filteredPositions.length === 0) {
         tbody.innerHTML = '<tr><td colspan="7" class="p-2 text-center text-slate-400">No active positions for this month.</td></tr>';
@@ -454,7 +441,6 @@ HTML_CONTENT = """<!DOCTYPE html>
             pl = 0;
           }
           statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
-          
           totalUnrealized += pl;
           if (isThisMonth) {
             thisMonthUnrealized += pl;
@@ -532,7 +518,6 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         status.innerText = "Updated: " + new Date().toLocaleTimeString();
       } catch (err) {
-        console.error("Fetch failed:", err);
         status.innerText = "Error loading data.";
       } finally {
         btn.disabled = false;
@@ -690,31 +675,6 @@ def remove_position(pos_id: int):
         raise HTTPException(status_code=500, detail="Failed to delete from GitHub")
     return {"status": "success"}
 
-@app.get("/api/positions/prune-old")
-def prune_old_positions():
-    positions, _ = get_positions_from_github()
-    now = datetime.date.today()
-    current_year = now.year
-    current_month = now.month
-
-    kept = []
-    changed = False
-    for p in positions:
-        try:
-            parts = p["exp"].split('-')
-            p_year = int(parts[0])
-            p_month = int(parts[1])
-            if p_year < current_year or (p_year == current_year and p_month < current_month):
-                changed = True
-                continue
-            kept.append(p)
-        except Exception:
-            kept.append(p)
-
-    if changed:
-        save_positions_to_github(kept)
-    return {"status": "pruned", "remaining": len(kept)}
-
 @app.get("/api/data")
 def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
     cache_key = f"{tickers}_{delta}"
@@ -771,11 +731,11 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
             "resistance": round(max(r1, rolling_resistance), 2)
         }
 
-        # Match target expirations sequentially without thread choking
+        # Match target to expiration date
+        target_to_exp = {}
         for target in target_periods:
-            closest_exp = None
+            closest = None
             min_diff = float("inf")
-
             for exp in expirations:
                 try:
                     exp_date = datetime.datetime.strptime(exp, "%Y-%m-%d").date()
@@ -783,29 +743,37 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
                     continue
                 if exp_date <= today:
                     continue
-                days_diff = abs((exp_date - today).days - target)
-                if days_diff < min_diff:
-                    min_diff = days_diff
-                    closest_exp = exp
+                diff = abs((exp_date - today).days - target)
+                if diff < min_diff:
+                    min_diff = diff
+                    closest = exp
+            if closest:
+                target_to_exp[target] = closest
 
-            if not closest_exp:
-                continue
-
+        # Download option chain for UNIQUE dates only (fast single-fetch)
+        unique_exps = set(target_to_exp.values())
+        loaded_chains = {}
+        for exp in unique_exps:
             try:
-                exp_date = datetime.datetime.strptime(closest_exp, "%Y-%m-%d").date()
-                b_days = count_business_days(today, exp_date)
-                chain = tkr.option_chain(closest_exp)
-                puts, calls = chain.puts, chain.calls
+                loaded_chains[exp] = tkr.option_chain(exp)
             except Exception:
                 continue
 
+        # Evaluate Greeks and format rows
+        for target, exp in target_to_exp.items():
+            if exp not in loaded_chains:
+                continue
+            chain = loaded_chains[exp]
+            exp_date = datetime.datetime.strptime(exp, "%Y-%m-%d").date()
+            b_days = count_business_days(today, exp_date)
             T = max(b_days, 1) / 252.0
             r = 0.05
-            
+
             exp_short = exp_date.strftime("%b %d")
             exp_stacked = f"{exp_short}<br><span class='text-[9px] text-slate-400 font-mono'>({b_days}d)</span>"
 
-            # 1. Puts
+            # Puts
+            puts = chain.puts
             if puts is not None and not puts.empty:
                 best_put = None
                 min_p_diff = float("inf")
@@ -830,7 +798,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
                     ann_pct = yield_pct * 252 / b_days
                     pct_diff = ((k_val - spot_price) / spot_price) * 100
                     results_puts[str(target)][ticker] = {
-                        "raw_exp": closest_exp,
+                        "raw_exp": exp,
                         "exp": exp_stacked,
                         "strike": round(k_val, 2),
                         "pct_diff": f"{pct_diff:+.1f}%",
@@ -840,7 +808,8 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
                         "is_safe": k_val < market_data[ticker]["support"]
                     }
 
-            # 2. Calls
+            # Calls
+            calls = chain.calls
             if calls is not None and not calls.empty:
                 best_call = None
                 min_c_diff = float("inf")
@@ -865,7 +834,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
                     ann_pct = yield_pct * 252 / b_days
                     pct_diff = ((k_val - spot_price) / spot_price) * 100
                     results_calls[str(target)][ticker] = {
-                        "raw_exp": closest_exp,
+                        "raw_exp": exp,
                         "exp": exp_stacked,
                         "strike": round(k_val, 2),
                         "pct_diff": f"{pct_diff:+.1f}%",
