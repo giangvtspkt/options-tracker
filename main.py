@@ -28,6 +28,9 @@ def calc_call_delta(S, K, T, r, sigma):
     d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
     return norm_cdf(d1)
 
+def count_calendar_days(start_date, end_date):
+    return max((end_date - start_date).days, 1)
+
 def count_business_days(start_date, end_date):
     days = 0
     curr = start_date + datetime.timedelta(days=1)
@@ -45,14 +48,14 @@ def get_positions_from_github():
         "Authorization": f"token {GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3+json"
     }
-    r = requests.get(url, headers=headers)
-    if r.status_code == 200:
-        data = r.json()
-        content = base64.b64decode(data['content']).decode('utf-8')
-        try:
+    try:
+        r = requests.get(url, headers=headers, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            content = base64.b64decode(data['content']).decode('utf-8')
             return json.loads(content), data.get('sha')
-        except:
-            return [], data.get('sha')
+    except Exception:
+        pass
     return [], None
 
 def save_positions_to_github(positions):
@@ -66,14 +69,14 @@ def save_positions_to_github(positions):
     _, sha = get_positions_from_github()
     content_str = json.dumps(positions, indent=2)
     encoded = base64.b64encode(content_str.encode('utf-8')).decode('utf-8')
-    payload = {
-        "message": "Update positions storage",
-        "content": encoded
-    }
+    payload = {"message": "Update positions storage", "content": encoded}
     if sha:
         payload["sha"] = sha
-    res = requests.put(url, headers=headers, json=payload)
-    return res.status_code in [200, 201]
+    try:
+        res = requests.put(url, headers=headers, json=payload, timeout=5)
+        return res.status_code in [200, 201]
+    except Exception:
+        return False
 
 class PositionModel(BaseModel):
     id: int
@@ -90,7 +93,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Options Tracker (Cloud Sync)</title>
+  <title>Options Tracker</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-100 text-slate-800 p-2.5 sm:p-4 font-sans text-xs">
@@ -182,7 +185,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           </tr>
         </thead>
         <tbody id="positionsBody">
-          <tr><td colspan="6" class="p-2 text-center text-slate-400">Loading positions from GitHub...</td></tr>
+          <tr><td colspan="6" class="p-2 text-center text-slate-400">Loading positions...</td></tr>
         </tbody>
       </table>
     </div>
@@ -529,32 +532,38 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
             "resistance": round(max(r1, rolling_resistance), 2)
         }
 
+        # Match closest expiration by minimum difference in calendar days
         for target in target_periods:
-            max_b_days_limit = math.ceil(target * (5.0 / 7.0))
-            closest_exp, actual_b_days = None, 0
-            max_b = -1
+            closest_exp = None
+            min_day_diff = float("inf")
+            actual_cal_days = 0
 
             for exp in expirations:
                 exp_date = datetime.datetime.strptime(exp, "%Y-%m-%d").date()
-                if exp_date <= today: continue
-                b_days = count_business_days(today, exp_date)
-                if b_days <= max_b_days_limit and b_days > max_b:
-                    max_b = b_days
+                if exp_date <= today:
+                    continue
+                cal_days = count_calendar_days(today, exp_date)
+                diff = abs(cal_days - target)
+                if diff < min_day_diff:
+                    min_day_diff = diff
                     closest_exp = exp
-                    actual_b_days = b_days
+                    actual_cal_days = cal_days
 
             if closest_exp:
+                exp_date = datetime.datetime.strptime(closest_exp, "%Y-%m-%d").date()
+                b_days = count_business_days(today, exp_date)
+
                 try:
                     chain = tkr.option_chain(closest_exp)
                     puts, calls = chain.puts, chain.calls
                 except Exception:
                     continue
 
-                T = max(actual_b_days, 1) / 252.0
+                T = max(b_days, 1) / 252.0
                 r = 0.05
                 
-                exp_short = datetime.datetime.strptime(closest_exp, "%Y-%m-%d").strftime("%b %d")
-                exp_stacked = f"{exp_short}<br><span class='text-[9px] text-slate-400 font-mono'>({actual_b_days}d)</span>"
+                exp_short = exp_date.strftime("%b %d")
+                exp_stacked = f"{exp_short}<br><span class='text-[9px] text-slate-400 font-mono'>({b_days}d)</span>"
 
                 # Puts
                 best_put = None
@@ -569,7 +578,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
                 if best_put is not None:
                     prem = best_put['bid'] if best_put['bid'] > 0 else best_put['lastPrice']
                     yield_pct = (prem / best_put['strike'] * 100) if best_put['strike'] > 0 else 0
-                    ann_pct = yield_pct * 252 / actual_b_days
+                    ann_pct = yield_pct * 252 / b_days
                     pct_diff = ((best_put['strike'] - spot_price) / spot_price) * 100
                     results_puts[target][ticker] = {
                         "exp": exp_stacked,
@@ -594,7 +603,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
                 if best_call is not None:
                     prem = best_call['bid'] if best_call['bid'] > 0 else best_call['lastPrice']
                     yield_pct = (prem / spot_price * 100) if spot_price > 0 else 0
-                    ann_pct = yield_pct * 252 / actual_b_days
+                    ann_pct = yield_pct * 252 / b_days
                     pct_diff = ((best_call['strike'] - spot_price) / spot_price) * 100
                     results_calls[target][ticker] = {
                         "exp": exp_stacked,
