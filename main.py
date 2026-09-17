@@ -1,9 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-import math
-import datetime
-import time
 import os
 import json
 import base64
@@ -15,44 +12,6 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
 
-# In-memory fast cache (3 minutes)
-DATA_CACHE = {}
-CACHE_TTL = 180
-
-# Configure custom headers
-YF_SESSION = requests.Session()
-YF_SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-})
-
-def norm_cdf(x):
-    return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
-
-def calc_put_delta(S, K, T, r, sigma):
-    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return -0.5
-    try:
-        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
-        return norm_cdf(d1) - 1.0
-    except Exception:
-        return -0.5
-
-def calc_call_delta(S, K, T, r, sigma):
-    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0.5
-    try:
-        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
-        return norm_cdf(d1)
-    except Exception:
-        return 0.5
-
-def count_business_days(start_date, end_date):
-    days = 0
-    curr = start_date + datetime.timedelta(days=1)
-    while curr <= end_date:
-        if curr.weekday() < 5:
-            days += 1
-        curr += datetime.timedelta(days=1)
-    return max(days, 1)
-
 def get_positions_from_github():
     if not GITHUB_TOKEN or not GITHUB_REPO:
         return [], None
@@ -62,7 +21,7 @@ def get_positions_from_github():
         "Accept": "application/vnd.github.v3+json"
     }
     try:
-        r = requests.get(url, headers=headers, timeout=3)
+        r = requests.get(url, headers=headers, timeout=4)
         if r.status_code == 200:
             data = r.json()
             content = base64.b64decode(data['content']).decode('utf-8')
@@ -86,7 +45,7 @@ def save_positions_to_github(positions):
     if sha:
         payload["sha"] = sha
     try:
-        res = requests.put(url, headers=headers, json=payload, timeout=3)
+        res = requests.put(url, headers=headers, json=payload, timeout=4)
         return res.status_code in [200, 201]
     except Exception:
         return False
@@ -127,7 +86,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     <div id="status" class="text-[11px] text-slate-500 mt-1.5 text-right font-medium">Ready</div>
   </div>
 
-  <!-- Performance & Positions -->
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
     <div class="flex items-center justify-between mb-2">
       <h2 class="text-xs font-bold text-slate-800 flex items-center gap-1">
@@ -229,29 +187,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Spot & Manual Key Levels Box -->
-  <div class="mb-3">
-    <h2 class="text-xs font-bold text-blue-950 bg-blue-100/80 p-2.5 rounded-t-lg border-t border-x border-blue-200 flex items-center justify-between">
-      <span>📊 Spot &amp; Manual Key Levels</span>
-      <span class="text-[10px] font-normal text-blue-800">Custom Floor &amp; Ceiling Inputs</span>
-    </h2>
-    <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
-      <table class="w-full text-left" id="levelsTable">
-        <thead class="bg-slate-50 border-b border-slate-200 text-[11px] text-slate-600">
-          <tr>
-            <th class="p-2 border-r font-bold">Ticker</th>
-            <th class="p-2 border-r font-bold">Spot Price</th>
-            <th class="p-2 border-r font-bold text-emerald-800 bg-emerald-50/50">Support Floor ($)</th>
-            <th class="p-2 font-bold text-rose-800 bg-rose-50/50">Resistance Ceiling ($)</th>
-          </tr>
-        </thead>
-        <tbody id="levelsBody">
-          <tr><td colspan="4" class="p-3 text-center text-slate-400">Loading market levels...</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-
   <div class="flex items-center gap-1.5 mb-3 overflow-x-auto py-1">
     <span class="text-[11px] font-bold text-slate-500 mr-1">View:</span>
     <div id="tickerPills" class="flex gap-1.5"></div>
@@ -259,12 +194,12 @@ HTML_CONTENT = """<!DOCTYPE html>
 
   <div class="mb-4">
     <h2 class="text-xs font-bold text-sky-900 bg-sky-100 p-2.5 rounded-t-lg border-t border-x border-sky-200">
-      📉 Cash-Secured Puts (Green = Strike &lt; Manual Support)
+      📉 Cash-Secured Puts
     </h2>
     <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
       <table class="w-full text-left" id="putsTable">
         <tbody id="putsBody">
-          <tr><td class="p-4 text-center text-slate-400">Fetching options data...</td></tr>
+          <tr><td class="p-4 text-center text-slate-400">Ready to load quotes...</td></tr>
         </tbody>
       </table>
     </div>
@@ -272,12 +207,12 @@ HTML_CONTENT = """<!DOCTYPE html>
 
   <div class="mb-6">
     <h2 class="text-xs font-bold text-amber-900 bg-amber-100 p-2.5 rounded-t-lg border-t border-x border-amber-200">
-      📈 Covered Calls (Green = Strike &gt; Manual Resistance)
+      📈 Covered Calls
     </h2>
     <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
       <table class="w-full text-left" id="callsTable">
         <tbody id="callsBody">
-          <tr><td class="p-4 text-center text-slate-400">Fetching options data...</td></tr>
+          <tr><td class="p-4 text-center text-slate-400">Ready to load quotes...</td></tr>
         </tbody>
       </table>
     </div>
@@ -287,19 +222,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     let globalData = null;
     let selectedTicker = 'ALL';
     let cloudPositions = [];
-
-    // Local manual levels storage
-    function getManualLevels() {
-      return JSON.parse(localStorage.getItem('manual_key_levels') || '{}');
-    }
-
-    function updateManualLevel(ticker, key, value) {
-      const levels = getManualLevels();
-      if (!levels[ticker]) levels[ticker] = {};
-      levels[ticker][key] = parseFloat(value) || 0;
-      localStorage.setItem('manual_key_levels', JSON.stringify(levels));
-      renderBothTables();
-    }
+    const TARGET_DAYS = [7, 14, 21, 30];
 
     const EXP_COLOR_PALETTE = [
       'bg-indigo-50/80',
@@ -366,178 +289,179 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (res.ok) loadCloudPositions();
     }
 
-    function renderPositionsAndPL() {
-      const tbody = document.getElementById('positionsBody');
-      const now = new Date();
-      const currentYear = now.getFullYear();
-      const currentMonth = now.getMonth();
+    // Normal CDF calculation for Delta
+    function normCdf(x) {
+      const a1 =  0.254829592, a2 = -0.284496736, a3 =  1.421413741;
+      const a4 = -1.453152027, a5 =  1.061405429, p  =  0.3275911;
+      const sign = x < 0 ? -1 : 1;
+      x = Math.abs(x) / Math.sqrt(2.0);
+      const t = 1.0 / (1.0 + p * x);
+      const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+      return 0.5 * (1.0 + sign * y);
+    }
 
-      let lastMonthYear = currentYear;
-      let lastMonth = currentMonth - 1;
-      if (lastMonth < 0) {
-        lastMonth = 11;
-        lastMonthYear--;
+    function calcPutDelta(S, K, T, r, sigma) {
+      if (T <= 0 || sigma <= 0 || S <= 0 || K <= 0) return -0.5;
+      const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
+      return normCdf(d1) - 1.0;
+    }
+
+    function calcCallDelta(S, K, T, r, sigma) {
+      if (T <= 0 || sigma <= 0 || S <= 0 || K <= 0) return 0.5;
+      const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
+      return normCdf(d1);
+    }
+
+    function countBusinessDays(startDate, endDate) {
+      let count = 0;
+      let cur = new Date(startDate);
+      cur.setDate(cur.getDate() + 1);
+      while (cur <= endDate) {
+        const day = cur.getDay();
+        if (day !== 0 && day !== 6) count++;
+        cur.setDate(cur.getDate() + 1);
       }
+      return Math.max(count, 1);
+    }
 
-      const filteredPositions = [];
-      cloudPositions.forEach(p => {
-        const parts = p.exp.split('-');
-        const pYear = parseInt(parts[0], 10);
-        const pMonth = parseInt(parts[1], 10) - 1;
+    // Direct client-side fetch bypasses Render IP rate-limiting
+    async function fetchTickerOptions(ticker) {
+      const targetUrl = `https://query2.finance.yahoo.com/v7/finance/options/${ticker}`;
+      const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
 
-        if (pYear > currentYear || (pYear === currentYear && pMonth >= currentMonth)) {
-          filteredPositions.push(p);
-        }
-      });
-
-      filteredPositions.sort((a, b) => {
-        const dateDiff = new Date(a.exp) - new Date(b.exp);
-        if (dateDiff !== 0) return dateDiff;
-        return a.ticker.localeCompare(b.ticker);
-      });
-
-      if (filteredPositions.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="p-2 text-center text-slate-400">No active positions for this month.</td></tr>';
-        document.getElementById('totalRealized').innerText = "$0.00";
-        document.getElementById('lastMonthRealized').innerText = "$0.00";
-        document.getElementById('thisMonthRealized').innerText = "$0.00";
-        document.getElementById('thisMonthUnrealized').innerText = "$0.00";
-        document.getElementById('totalUnrealized').innerText = "$0.00";
-        return;
+      let res;
+      try {
+        res = await fetch(targetUrl);
+        if (!res.ok) throw new Error();
+      } catch (e) {
+        res = await fetch(proxyUrl);
       }
-
-      tbody.innerHTML = '';
-      const todayStr = now.toISOString().split('T')[0];
-
-      let totalRealized = 0;
-      let thisMonthRealized = 0;
-      let lastMonthRealized = 0;
-      let thisMonthUnrealized = 0;
-      let totalUnrealized = 0;
-
-      const posColorMap = {};
-
-      filteredPositions.forEach(p => {
-        const parts = p.exp.split('-');
-        const pYear = parseInt(parts[0], 10);
-        const pMonth = parseInt(parts[1], 10) - 1;
-        const isExpired = p.exp < todayStr;
-        const isThisMonth = (pYear === currentYear && pMonth === currentMonth);
-
-        const spot = (globalData && globalData.market && globalData.market[p.ticker]) 
-          ? globalData.market[p.ticker].spot 
-          : null;
-
-        let pl = 0;
-        let statusHtml = '';
-
-        if (isExpired) {
-          if (p.action === 'SELL') {
-            if ((p.type === 'PUT' && (!spot || spot >= p.strike)) || (p.type === 'CALL' && (!spot || spot <= p.strike))) {
-              pl = p.prem * 100 * p.qty;
-              statusHtml = '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">Expired (Win)</span>';
-            } else {
-              const intrinsic = p.type === 'PUT' ? Math.max(p.strike - spot, 0) : Math.max(spot - p.strike, 0);
-              pl = (p.prem - intrinsic) * 100 * p.qty;
-              statusHtml = '<span class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">Assigned</span>';
-            }
-          } else {
-            const intrinsic = p.type === 'CALL' ? Math.max((spot || 0) - p.strike, 0) : Math.max(p.strike - (spot || 0), 0);
-            pl = (intrinsic - p.prem) * 100 * p.qty;
-            statusHtml = '<span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-bold">Closed</span>';
-          }
-
-          totalRealized += pl;
-          if (isThisMonth) {
-            thisMonthRealized += pl;
-          } else if (pYear === lastMonthYear && pMonth === lastMonth) {
-            lastMonthRealized += pl;
-          }
-        } else {
-          if (p.action === 'SELL') {
-            pl = p.prem * 100 * p.qty;
-          } else {
-            pl = 0;
-          }
-          statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
-          totalUnrealized += pl;
-          if (isThisMonth) {
-            thisMonthUnrealized += pl;
-          }
-        }
-
-        const plColor = pl >= 0 ? 'text-emerald-700' : 'text-rose-700';
-        const plPrefix = pl >= 0 ? '+$' : '-$';
-        const plDisplay = `${plPrefix}${Math.abs(pl).toFixed(2)}`;
-
-        const actionBadge = p.action === 'SELL'
-          ? '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">SELL</span>'
-          : '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">BUY</span>';
-
-        const rowBg = getExpColor(p.exp, posColorMap);
-
-        const tr = document.createElement('tr');
-        tr.className = `border-b ${rowBg}`;
-        tr.innerHTML = `
-          <td class="p-1.5 border-r whitespace-nowrap">${actionBadge}</td>
-          <td class="p-1.5 border-r whitespace-nowrap font-bold">${p.ticker} $${p.strike} ${p.type} (x${p.qty})</td>
-          <td class="p-1.5 border-r whitespace-nowrap text-slate-700 font-mono font-bold">${p.exp}</td>
-          <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
-          <td class="p-1.5 border-r whitespace-nowrap font-mono font-bold ${plColor}">${plDisplay}</td>
-          <td class="p-1.5 border-r whitespace-nowrap">${statusHtml}</td>
-          <td class="p-1.5 text-center">
-            <button onclick="deletePosition(${p.id})" class="text-rose-600 hover:text-rose-800 font-bold">✕</button>
-          </td>
-        `;
-        tbody.appendChild(tr);
-      });
-
-      const fmt = (val) => `${val >= 0 ? '+$' : '-$'}${Math.abs(val).toFixed(2)}`;
-      const cls = (val) => `text-xs font-extrabold font-mono ${val >= 0 ? 'text-emerald-700' : 'text-rose-700'}`;
-
-      const totEl = document.getElementById('totalRealized');
-      totEl.innerText = fmt(totalRealized);
-      totEl.className = cls(totalRealized);
-
-      const lastEl = document.getElementById('lastMonthRealized');
-      lastEl.innerText = fmt(lastMonthRealized);
-      lastEl.className = cls(lastMonthRealized);
-
-      const thisEl = document.getElementById('thisMonthRealized');
-      thisEl.innerText = fmt(thisMonthRealized);
-      thisEl.className = cls(thisMonthRealized);
-
-      const thisUnEl = document.getElementById('thisMonthUnrealized');
-      thisUnEl.innerText = fmt(thisMonthUnrealized);
-      thisUnEl.className = cls(thisMonthUnrealized);
-
-      const totUnEl = document.getElementById('totalUnrealized');
-      totUnEl.innerText = fmt(totalUnrealized);
-      totUnEl.className = cls(totalUnrealized);
+      return await res.json();
     }
 
     async function fetchData() {
       const btn = document.getElementById('refreshBtn');
       const status = document.getElementById('status');
       btn.disabled = true;
-      status.innerText = "Fetching live quotes...";
+      status.innerText = "Fetching live market data...";
 
-      const tickers = document.getElementById('tickers').value;
-      const delta = document.getElementById('delta').value;
+      const tickerInput = document.getElementById('tickers').value;
+      const tickers = tickerInput.split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
+      const deltaTarget = parseFloat(document.getElementById('delta').value) || 0.15;
+      const today = new Date();
+
+      const market = {};
+      const puts = { '7': {}, '14': {}, '21': {}, '30': {} };
+      const calls = { '7': {}, '14': {}, '21': {}, '30': {} };
 
       try {
-        const res = await fetch(`/api/data?tickers=${encodeURIComponent(tickers)}&delta=${delta}`);
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        globalData = await res.json();
+        for (const ticker of tickers) {
+          const raw = await fetchTickerOptions(ticker);
+          const resultData = raw.optionChain?.result?.[0];
+          if (!resultData) continue;
 
-        renderLevelsTable(globalData.market);
-        renderPills(globalData.tickers);
+          const spot = resultData.quote?.regularMarketPrice || 0;
+          const expTimestamps = resultData.expirationDates || [];
+          market[ticker] = { spot };
+
+          const targetToTs = {};
+          for (const tgt of TARGET_DAYS) {
+            let closest = null;
+            let minDiff = Infinity;
+            for (const ts of expTimestamps) {
+              const expDate = new Date(ts * 1000);
+              if (expDate <= today) continue;
+              const diff = Math.abs((expDate - today) / (1000 * 60 * 60 * 24) - tgt);
+              if (diff < minDiff) {
+                minDiff = diff;
+                closest = ts;
+              }
+            }
+            if (closest) targetToTs[tgt] = closest;
+          }
+
+          const optionsList = resultData.options?.[0] || {};
+          const currentPuts = optionsList.puts || [];
+          const currentCalls = optionsList.calls || [];
+
+          for (const tgt of TARGET_DAYS) {
+            const ts = targetToTs[tgt];
+            if (!ts) continue;
+
+            const expDate = new Date(ts * 1000);
+            const bDays = countBusinessDays(today, expDate);
+            const T = bDays / 252.0;
+            const expMonth = expDate.toLocaleString('en-US', { month: 'short' });
+            const expDay = String(expDate.getDate()).padStart(2, '0');
+            const expStacked = `${expMonth} ${expDay}<br><span class='text-[9px] text-slate-400 font-mono'>(${bDays}d)</span>`;
+            const rawExp = expDate.toISOString().split('T')[0];
+
+            // Best Put
+            let bestPut = null, minPDiff = Infinity;
+            for (const p of currentPuts) {
+              const K = p.strike, iv = p.impliedVolatility || 0.5;
+              const d = calcPutDelta(spot, K, T, 0.05, iv);
+              const diff = Math.abs(d - (-deltaTarget));
+              if (diff < minPDiff) {
+                minPDiff = diff;
+                bestPut = p;
+              }
+            }
+
+            if (bestPut) {
+              const prem = bestPut.bid > 0 ? bestPut.bid : (bestPut.lastPrice || 0);
+              const yieldPct = bestPut.strike > 0 ? (prem / bestPut.strike) * 100 : 0;
+              const ann = (yieldPct * 252) / bDays;
+              const pctDiff = ((bestPut.strike - spot) / spot) * 100;
+              puts[String(tgt)][ticker] = {
+                raw_exp: rawExp,
+                exp: expStacked,
+                strike: bestPut.strike.toFixed(2),
+                pct_diff: (pctDiff >= 0 ? '+' : '') + pctDiff.toFixed(1) + '%',
+                iv: ((bestPut.impliedVolatility || 0) * 100).toFixed(1),
+                prem: prem.toFixed(2),
+                ann: ann.toFixed(1)
+              };
+            }
+
+            // Best Call
+            let bestCall = null, minCDiff = Infinity;
+            for (const c of currentCalls) {
+              const K = c.strike, iv = c.impliedVolatility || 0.5;
+              const d = calcCallDelta(spot, K, T, 0.05, iv);
+              const diff = Math.abs(d - deltaTarget);
+              if (diff < minCDiff) {
+                minCDiff = diff;
+                bestCall = c;
+              }
+            }
+
+            if (bestCall) {
+              const prem = bestCall.bid > 0 ? bestCall.bid : (bestCall.lastPrice || 0);
+              const yieldPct = spot > 0 ? (prem / spot) * 100 : 0;
+              const ann = (yieldPct * 252) / bDays;
+              const pctDiff = ((bestCall.strike - spot) / spot) * 100;
+              calls[String(tgt)][ticker] = {
+                raw_exp: rawExp,
+                exp: expStacked,
+                strike: bestCall.strike.toFixed(2),
+                pct_diff: (pctDiff >= 0 ? '+' : '') + pctDiff.toFixed(1) + '%',
+                iv: ((bestCall.impliedVolatility || 0) * 100).toFixed(1),
+                prem: prem.toFixed(2),
+                ann: ann.toFixed(1)
+              };
+            }
+          }
+        }
+
+        globalData = { market, tickers, targets: TARGET_DAYS, puts, calls };
+        renderPills(tickers);
         renderBothTables();
         renderPositionsAndPL();
-
         status.innerText = "Updated: " + new Date().toLocaleTimeString();
       } catch (err) {
-        status.innerText = "Error loading data.";
+        console.error(err);
+        status.innerText = "Error loading market data.";
       } finally {
         btn.disabled = false;
       }
@@ -561,65 +485,20 @@ HTML_CONTENT = """<!DOCTYPE html>
       });
     }
 
-    function renderLevelsTable(market) {
-      const tbody = document.getElementById('levelsBody');
-      tbody.innerHTML = '';
-      const entries = Object.entries(market || {});
-      if (entries.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="4" class="p-3 text-center text-slate-400">No ticker data available.</td></tr>`;
-        return;
-      }
-      const manualLevels = getManualLevels();
-
-      entries.forEach(([ticker, m]) => {
-        const currentSupp = (manualLevels[ticker] && manualLevels[ticker].support !== undefined) 
-          ? manualLevels[ticker].support 
-          : (m.spot * 0.95).toFixed(2);
-        const currentRes = (manualLevels[ticker] && manualLevels[ticker].resistance !== undefined) 
-          ? manualLevels[ticker].resistance 
-          : (m.spot * 1.05).toFixed(2);
-
-        // Save defaults if not already present
-        if (!manualLevels[ticker]) {
-          manualLevels[ticker] = { support: parseFloat(currentSupp), resistance: parseFloat(currentRes) };
-          localStorage.setItem('manual_key_levels', JSON.stringify(manualLevels));
-        }
-
-        const tr = document.createElement('tr');
-        tr.className = "border-b hover:bg-slate-50 text-[11px]";
-        tr.innerHTML = `
-          <td class="p-2 border-r font-bold text-slate-800 bg-slate-50">${ticker}</td>
-          <td class="p-2 border-r font-bold text-blue-700 font-mono">$${m.spot}</td>
-          <td class="p-2 border-r bg-emerald-50/50">
-            <input type="number" step="0.1" value="${currentSupp}" 
-              onchange="updateManualLevel('${ticker}', 'support', this.value)"
-              class="w-24 p-1 border rounded font-mono font-bold text-emerald-800 bg-white">
-          </td>
-          <td class="p-2 bg-rose-50/50">
-            <input type="number" step="0.1" value="${currentRes}" 
-              onchange="updateManualLevel('${ticker}', 'resistance', this.value)"
-              class="w-24 p-1 border rounded font-mono font-bold text-rose-800 bg-white">
-          </td>
-        `;
-        tbody.appendChild(tr);
-      });
-    }
-
     function renderBothTables() {
       if (!globalData) return;
       const displayTickers = selectedTicker === 'ALL' ? globalData.tickers : [selectedTicker];
-      renderTable('putsBody', globalData.puts, displayTickers, globalData.targets, 'PUT');
-      renderTable('callsBody', globalData.calls, displayTickers, globalData.targets, 'CALL');
+      renderTable('putsBody', globalData.puts, displayTickers, globalData.targets);
+      renderTable('callsBody', globalData.calls, displayTickers, globalData.targets);
     }
 
-    function renderTable(elementId, results, tickers, targets, optType) {
+    function renderTable(elementId, results, tickers, targets) {
       const tbody = document.getElementById(elementId);
       tbody.innerHTML = '';
 
       const tickerColors = [
         { header: 'bg-slate-700 text-white', sub: 'bg-slate-100 text-slate-700' },
-        { header: 'bg-indigo-900 text-white', sub: 'bg-indigo-50 text-indigo-950' },
-        { header: 'bg-teal-900 text-white', sub: 'bg-teal-50 text-teal-950' }
+        { header: 'bg-indigo-900 text-white', sub: 'bg-indigo-50 text-indigo-950' }
       ];
 
       let headHtml = `<tr class="border-b text-[11px]"><th class="p-2 border-r-2 border-r-slate-400 bg-slate-200">Target</th>`;
@@ -627,9 +506,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         const c = tickerColors[i % tickerColors.length];
         headHtml += `<th class="p-2 border-r-2 border-r-slate-400 text-center tracking-wider font-extrabold ${c.header}" colspan="5">${t}</th>`; 
       });
-      headHtml += `</tr>`;
-
-      headHtml += `<tr class="border-b text-[10px] font-semibold"><th class="p-1 border-r-2 border-r-slate-400 bg-slate-100"></th>`;
+      headHtml += `</tr><tr class="border-b text-[10px] font-semibold"><th class="p-1 border-r-2 border-r-slate-400 bg-slate-100"></th>`;
       tickers.forEach((_, i) => { 
         const c = tickerColors[i % tickerColors.length];
         headHtml += `
@@ -644,15 +521,13 @@ HTML_CONTENT = """<!DOCTYPE html>
       tbody.innerHTML += headHtml;
 
       const tableColorMap = {};
-      const manualLevels = getManualLevels();
-
       targets.forEach(tgt => {
         const targetKey = String(tgt);
         const targetDict = results[tgt] || results[targetKey] || {};
 
         let rowExpKey = '';
         for (const t of tickers) {
-          if (targetDict[t] && targetDict[t].raw_exp) {
+          if (targetDict[t]?.raw_exp) {
             rowExpKey = targetDict[t].raw_exp;
             break;
           }
@@ -662,24 +537,12 @@ HTML_CONTENT = """<!DOCTYPE html>
         const badge = (tgt === 21 || tgt === 30) ? '★ ' : '';
 
         let rowHtml = `<tr class="border-b ${rowBg}"><td class="p-2 border-r-2 border-r-slate-400 whitespace-nowrap font-bold text-slate-700">${badge}${tgt}d</td>`;
-
         tickers.forEach(t => {
           const item = targetDict[t];
           if (item) {
-            // Check safe zone against manual inputs
-            let isSafe = false;
-            if (manualLevels[t]) {
-              if (optType === 'PUT' && manualLevels[t].support !== undefined) {
-                isSafe = item.strike < manualLevels[t].support;
-              } else if (optType === 'CALL' && manualLevels[t].resistance !== undefined) {
-                isSafe = item.strike > manualLevels[t].resistance;
-              }
-            }
-
-            const strikeBg = isSafe ? 'bg-green-200 text-green-900 font-bold' : '';
             rowHtml += `
               <td class="p-1 border-r text-center leading-tight text-[10px] text-slate-700">${item.exp}</td>
-              <td class="p-1.5 border-r whitespace-nowrap ${strikeBg}">$${item.strike} <span class="text-[9px]">(${item.pct_diff})</span></td>
+              <td class="p-1.5 border-r whitespace-nowrap font-semibold">$${item.strike} <span class="text-[9px]">(${item.pct_diff})</span></td>
               <td class="p-1.5 border-r whitespace-nowrap text-slate-500 font-mono">${item.iv}%</td>
               <td class="p-1.5 border-r whitespace-nowrap font-bold">$${item.prem}</td>
               <td class="p-1.5 border-r-2 border-r-slate-400 whitespace-nowrap text-emerald-700 font-bold">${item.ann}%</td>
@@ -693,9 +556,117 @@ HTML_CONTENT = """<!DOCTYPE html>
       });
     }
 
+    function renderPositionsAndPL() {
+      const tbody = document.getElementById('positionsBody');
+      const now = new Date();
+      const currentYear = now.getFullYear();
+      const currentMonth = now.getMonth();
+
+      let lastMonthYear = currentYear;
+      let lastMonth = currentMonth - 1;
+      if (lastMonth < 0) {
+        lastMonth = 11;
+        lastMonthYear--;
+      }
+
+      const filteredPositions = [];
+      cloudPositions.forEach(p => {
+        const parts = p.exp.split('-');
+        const pYear = parseInt(parts[0], 10);
+        const pMonth = parseInt(parts[1], 10) - 1;
+        if (pYear > currentYear || (pYear === currentYear && pMonth >= currentMonth)) {
+          filteredPositions.push(p);
+        }
+      });
+
+      filteredPositions.sort((a, b) => {
+        const dateDiff = new Date(a.exp) - new Date(b.exp);
+        if (dateDiff !== 0) return dateDiff;
+        return a.ticker.localeCompare(b.ticker);
+      });
+
+      if (filteredPositions.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="p-2 text-center text-slate-400">No active positions for this month.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = '';
+      const todayStr = now.toISOString().split('T')[0];
+      let totalRealized = 0, thisMonthRealized = 0, lastMonthRealized = 0, thisMonthUnrealized = 0, totalUnrealized = 0;
+      const posColorMap = {};
+
+      filteredPositions.forEach(p => {
+        const parts = p.exp.split('-');
+        const pYear = parseInt(parts[0], 10);
+        const pMonth = parseInt(parts[1], 10) - 1;
+        const isExpired = p.exp < todayStr;
+        const isThisMonth = (pYear === currentYear && pMonth === currentMonth);
+        const spot = globalData?.market?.[p.ticker]?.spot || null;
+
+        let pl = 0;
+        let statusHtml = '';
+
+        if (isExpired) {
+          if (p.action === 'SELL') {
+            if ((p.type === 'PUT' && (!spot || spot >= p.strike)) || (p.type === 'CALL' && (!spot || spot <= p.strike))) {
+              pl = p.prem * 100 * p.qty;
+              statusHtml = '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">Expired (Win)</span>';
+            } else {
+              const intrinsic = p.type === 'PUT' ? Math.max(p.strike - spot, 0) : Math.max(spot - p.strike, 0);
+              pl = (p.prem - intrinsic) * 100 * p.qty;
+              statusHtml = '<span class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">Assigned</span>';
+            }
+          } else {
+            const intrinsic = p.type === 'CALL' ? Math.max((spot || 0) - p.strike, 0) : Math.max(p.strike - (spot || 0), 0);
+            pl = (intrinsic - p.prem) * 100 * p.qty;
+            statusHtml = '<span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-bold">Closed</span>';
+          }
+
+          totalRealized += pl;
+          if (isThisMonth) thisMonthRealized += pl;
+          else if (pYear === lastMonthYear && pMonth === lastMonth) lastMonthRealized += pl;
+        } else {
+          pl = p.action === 'SELL' ? (p.prem * 100 * p.qty) : 0;
+          statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
+          totalUnrealized += pl;
+          if (isThisMonth) thisMonthUnrealized += pl;
+        }
+
+        const plColor = pl >= 0 ? 'text-emerald-700' : 'text-rose-700';
+        const plPrefix = pl >= 0 ? '+$' : '-$';
+        const plDisplay = `${plPrefix}${Math.abs(pl).toFixed(2)}`;
+
+        const actionBadge = p.action === 'SELL'
+          ? '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">SELL</span>'
+          : '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">BUY</span>';
+
+        const rowBg = getExpColor(p.exp, posColorMap);
+        const tr = document.createElement('tr');
+        tr.className = `border-b ${rowBg}`;
+        tr.innerHTML = `
+          <td class="p-1.5 border-r whitespace-nowrap">${actionBadge}</td>
+          <td class="p-1.5 border-r whitespace-nowrap font-bold">${p.ticker} $${p.strike} ${p.type} (x${p.qty})</td>
+          <td class="p-1.5 border-r whitespace-nowrap text-slate-700 font-mono font-bold">${p.exp}</td>
+          <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
+          <td class="p-1.5 border-r whitespace-nowrap font-mono font-bold ${plColor}">${plDisplay}</td>
+          <td class="p-1.5 border-r whitespace-nowrap">${statusHtml}</td>
+          <td class="p-1.5 text-center">
+            <button onclick="deletePosition(${p.id})" class="text-rose-600 hover:text-rose-800 font-bold">✕</button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      const fmt = (val) => `${val >= 0 ? '+$' : '-$'}${Math.abs(val).toFixed(2)}`;
+      document.getElementById('totalRealized').innerText = fmt(totalRealized);
+      document.getElementById('lastMonthRealized').innerText = fmt(lastMonthRealized);
+      document.getElementById('thisMonthRealized').innerText = fmt(thisMonthRealized);
+      document.getElementById('thisMonthUnrealized').innerText = fmt(thisMonthUnrealized);
+      document.getElementById('totalUnrealized').innerText = fmt(totalUnrealized);
+    }
+
     loadCloudPositions();
     fetchData();
-    setInterval(fetchData, 60000);
   </script>
 </body>
 </html>
@@ -723,171 +694,6 @@ def remove_position(pos_id: int):
     if not success:
         raise HTTPException(status_code=500, detail="Failed to delete from GitHub")
     return {"status": "success"}
-
-@app.get("/api/data")
-def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
-    cache_key = f"{tickers}_{delta}"
-    now = time.time()
-    
-    if cache_key in DATA_CACHE and (now - DATA_CACHE[cache_key]["time"]) < CACHE_TTL:
-        return DATA_CACHE[cache_key]["data"]
-
-    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
-    target_periods = [7, 14, 21, 30]
-    today = datetime.date.today()
-    
-    market_data = {}
-    results_puts = {str(t): {} for t in target_periods}
-    results_calls = {str(t): {} for t in target_periods}
-
-    for ticker in ticker_list:
-        try:
-            # Fast native query without historical Pandas loading
-            base_url = f"https://query2.finance.yahoo.com/v7/finance/options/{ticker}"
-            res = requests.get(base_url, headers=YF_SESSION.headers, timeout=4).json()
-            
-            result_data = res.get("optionChain", {}).get("result", [])
-            if not result_data: 
-                continue
-            
-            quote = result_data[0].get("quote", {})
-            spot_price = quote.get("regularMarketPrice", 0)
-            timestamps = result_data[0].get("expirationDates", [])
-            
-            if spot_price <= 0 or not timestamps: 
-                continue
-        except Exception:
-            continue
-
-        market_data[ticker] = {
-            "spot": round(spot_price, 2)
-        }
-
-        # Match closest target periods to expiration timestamps
-        target_to_ts = {}
-        for target in target_periods:
-            closest = None
-            min_diff = float("inf")
-            for ts in timestamps:
-                exp_date = datetime.datetime.utcfromtimestamp(ts).date()
-                if exp_date <= today:
-                    continue
-                diff = abs((exp_date - today).days - target)
-                if diff < min_diff:
-                    min_diff = diff
-                    closest = ts
-            if closest:
-                target_to_ts[target] = closest
-
-        # Download unique option chains natively
-        unique_ts = set(target_to_ts.values())
-        loaded_chains = {}
-        for ts in unique_ts:
-            try:
-                url = f"{base_url}?date={ts}"
-                c_res = requests.get(url, headers=YF_SESSION.headers, timeout=4).json()
-                c_result = c_res.get("optionChain", {}).get("result", [])
-                if c_result and c_result[0].get("options"):
-                    loaded_chains[ts] = c_result[0]["options"][0]
-            except Exception:
-                continue
-
-        # Calculate Greeks directly from lightweight dictionaries
-        for target, ts in target_to_ts.items():
-            if ts not in loaded_chains:
-                continue
-                
-            opts = loaded_chains[ts]
-            exp_date = datetime.datetime.utcfromtimestamp(ts).date()
-            raw_exp_str = exp_date.strftime("%Y-%m-%d")
-            b_days = count_business_days(today, exp_date)
-            T = max(b_days, 1) / 252.0
-            r = 0.05
-
-            exp_short = exp_date.strftime("%b %d")
-            exp_stacked = f"{exp_short}<br><span class='text-[9px] text-slate-400 font-mono'>({b_days}d)</span>"
-
-            # 1. Puts
-            best_put = None
-            min_p_diff = float("inf")
-            for row in opts.get("puts", []):
-                try:
-                    K = float(row.get('strike', 0))
-                    iv = float(row.get('impliedVolatility', 0.5))
-                    if K <= 0: continue
-                    
-                    d = calc_put_delta(spot_price, K, T, r, sigma=iv)
-                    diff = abs(d - (-delta))
-                    if diff < min_p_diff:
-                        min_p_diff = diff
-                        best_put = (row, K, iv)
-                except Exception:
-                    continue
-
-            if best_put is not None:
-                row, k_val, iv_val = best_put
-                bid_val = float(row.get('bid', 0))
-                last_val = float(row.get('lastPrice', 0))
-                prem = bid_val if bid_val > 0 else last_val
-                
-                yield_pct = (prem / k_val * 100) if k_val > 0 else 0
-                ann_pct = yield_pct * 252 / b_days
-                pct_diff = ((k_val - spot_price) / spot_price) * 100
-                results_puts[str(target)][ticker] = {
-                    "raw_exp": raw_exp_str,
-                    "exp": exp_stacked,
-                    "strike": round(k_val, 2),
-                    "pct_diff": f"{pct_diff:+.1f}%",
-                    "iv": round(iv_val * 100, 1),
-                    "prem": round(prem, 2),
-                    "ann": round(ann_pct, 1)
-                }
-
-            # 2. Calls
-            best_call = None
-            min_c_diff = float("inf")
-            for row in opts.get("calls", []):
-                try:
-                    K = float(row.get('strike', 0))
-                    iv = float(row.get('impliedVolatility', 0.5))
-                    if K <= 0: continue
-                    
-                    d = calc_call_delta(spot_price, K, T, r, sigma=iv)
-                    diff = abs(d - delta)
-                    if diff < min_c_diff:
-                        min_c_diff = diff
-                        best_call = (row, K, iv)
-                except Exception:
-                    continue
-
-            if best_call is not None:
-                row, k_val, iv_val = best_call
-                bid_val = float(row.get('bid', 0))
-                last_val = float(row.get('lastPrice', 0))
-                prem = bid_val if bid_val > 0 else last_val
-                
-                yield_pct = (prem / spot_price * 100) if spot_price > 0 else 0
-                ann_pct = yield_pct * 252 / b_days
-                pct_diff = ((k_val - spot_price) / spot_price) * 100
-                results_calls[str(target)][ticker] = {
-                    "raw_exp": raw_exp_str,
-                    "exp": exp_stacked,
-                    "strike": round(k_val, 2),
-                    "pct_diff": f"{pct_diff:+.1f}%",
-                    "iv": round(iv_val * 100, 1),
-                    "prem": round(prem, 2),
-                    "ann": round(ann_pct, 1)
-                }
-
-    result = {
-        "market": market_data,
-        "puts": results_puts,
-        "calls": results_calls,
-        "tickers": list(market_data.keys()),
-        "targets": target_periods
-    }
-    DATA_CACHE[cache_key] = {"time": now, "data": result}
-    return result
 
 @app.get("/", response_class=HTMLResponse)
 def render_index():
