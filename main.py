@@ -1,6 +1,9 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+import math
+import datetime
+import time
 import os
 import json
 import base64
@@ -11,6 +14,42 @@ app = FastAPI()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
+
+DATA_CACHE = {}
+CACHE_TTL = 120
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "application/json"
+}
+
+def norm_cdf(x):
+    return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
+
+def calc_put_delta(S, K, T, r, sigma):
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return -0.5
+    try:
+        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+        return norm_cdf(d1) - 1.0
+    except Exception:
+        return -0.5
+
+def calc_call_delta(S, K, T, r, sigma):
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0.5
+    try:
+        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+        return norm_cdf(d1)
+    except Exception:
+        return 0.5
+
+def count_business_days(start_date, end_date):
+    days = 0
+    curr = start_date + datetime.timedelta(days=1)
+    while curr <= end_date:
+        if curr.weekday() < 5:
+            days += 1
+        curr += datetime.timedelta(days=1)
+    return max(days, 1)
 
 def get_positions_from_github():
     if not GITHUB_TOKEN or not GITHUB_REPO:
@@ -199,7 +238,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
       <table class="w-full text-left" id="putsTable">
         <tbody id="putsBody">
-          <tr><td class="p-4 text-center text-slate-400">Ready to load quotes...</td></tr>
+          <tr><td class="p-4 text-center text-slate-400">Loading Put table...</td></tr>
         </tbody>
       </table>
     </div>
@@ -212,7 +251,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
       <table class="w-full text-left" id="callsTable">
         <tbody id="callsBody">
-          <tr><td class="p-4 text-center text-slate-400">Ready to load quotes...</td></tr>
+          <tr><td class="p-4 text-center text-slate-400">Loading Call table...</td></tr>
         </tbody>
       </table>
     </div>
@@ -222,7 +261,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     let globalData = null;
     let selectedTicker = 'ALL';
     let cloudPositions = [];
-    const TARGET_DAYS = [7, 14, 21, 30];
 
     const EXP_COLOR_PALETTE = [
       'bg-indigo-50/80',
@@ -289,179 +327,177 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (res.ok) loadCloudPositions();
     }
 
-    // Normal CDF calculation for Delta
-    function normCdf(x) {
-      const a1 =  0.254829592, a2 = -0.284496736, a3 =  1.421413741;
-      const a4 = -1.453152027, a5 =  1.061405429, p  =  0.3275911;
-      const sign = x < 0 ? -1 : 1;
-      x = Math.abs(x) / Math.sqrt(2.0);
-      const t = 1.0 / (1.0 + p * x);
-      const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
-      return 0.5 * (1.0 + sign * y);
-    }
+    function renderPositionsAndPL() {
+      const tbody = document.getElementById('positionsBody');
+      const now = new Date();
+      const currentYear = now.getFullYear();
+      const currentMonth = now.getMonth();
 
-    function calcPutDelta(S, K, T, r, sigma) {
-      if (T <= 0 || sigma <= 0 || S <= 0 || K <= 0) return -0.5;
-      const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
-      return normCdf(d1) - 1.0;
-    }
-
-    function calcCallDelta(S, K, T, r, sigma) {
-      if (T <= 0 || sigma <= 0 || S <= 0 || K <= 0) return 0.5;
-      const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
-      return normCdf(d1);
-    }
-
-    function countBusinessDays(startDate, endDate) {
-      let count = 0;
-      let cur = new Date(startDate);
-      cur.setDate(cur.getDate() + 1);
-      while (cur <= endDate) {
-        const day = cur.getDay();
-        if (day !== 0 && day !== 6) count++;
-        cur.setDate(cur.getDate() + 1);
+      let lastMonthYear = currentYear;
+      let lastMonth = currentMonth - 1;
+      if (lastMonth < 0) {
+        lastMonth = 11;
+        lastMonthYear--;
       }
-      return Math.max(count, 1);
-    }
 
-    // Direct client-side fetch bypasses Render IP rate-limiting
-    async function fetchTickerOptions(ticker) {
-      const targetUrl = `https://query2.finance.yahoo.com/v7/finance/options/${ticker}`;
-      const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
+      const filteredPositions = [];
+      cloudPositions.forEach(p => {
+        const parts = p.exp.split('-');
+        const pYear = parseInt(parts[0], 10);
+        const pMonth = parseInt(parts[1], 10) - 1;
 
-      let res;
-      try {
-        res = await fetch(targetUrl);
-        if (!res.ok) throw new Error();
-      } catch (e) {
-        res = await fetch(proxyUrl);
+        if (pYear > currentYear || (pYear === currentYear && pMonth >= currentMonth)) {
+          filteredPositions.push(p);
+        }
+      });
+
+      filteredPositions.sort((a, b) => {
+        const dateDiff = new Date(a.exp) - new Date(b.exp);
+        if (dateDiff !== 0) return dateDiff;
+        return a.ticker.localeCompare(b.ticker);
+      });
+
+      if (filteredPositions.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="p-2 text-center text-slate-400">No active positions for this month.</td></tr>';
+        document.getElementById('totalRealized').innerText = "$0.00";
+        document.getElementById('lastMonthRealized').innerText = "$0.00";
+        document.getElementById('thisMonthRealized').innerText = "$0.00";
+        document.getElementById('thisMonthUnrealized').innerText = "$0.00";
+        document.getElementById('totalUnrealized').innerText = "$0.00";
+        return;
       }
-      return await res.json();
+
+      tbody.innerHTML = '';
+      const todayStr = now.toISOString().split('T')[0];
+
+      let totalRealized = 0;
+      let thisMonthRealized = 0;
+      let lastMonthRealized = 0;
+      let thisMonthUnrealized = 0;
+      let totalUnrealized = 0;
+
+      const posColorMap = {};
+
+      filteredPositions.forEach(p => {
+        const parts = p.exp.split('-');
+        const pYear = parseInt(parts[0], 10);
+        const pMonth = parseInt(parts[1], 10) - 1;
+        const isExpired = p.exp < todayStr;
+        const isThisMonth = (pYear === currentYear && pMonth === currentMonth);
+
+        const spot = (globalData && globalData.market && globalData.market[p.ticker]) 
+          ? globalData.market[p.ticker].spot 
+          : null;
+
+        let pl = 0;
+        let statusHtml = '';
+
+        if (isExpired) {
+          if (p.action === 'SELL') {
+            if ((p.type === 'PUT' && (!spot || spot >= p.strike)) || (p.type === 'CALL' && (!spot || spot <= p.strike))) {
+              pl = p.prem * 100 * p.qty;
+              statusHtml = '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">Expired (Win)</span>';
+            } else {
+              const intrinsic = p.type === 'PUT' ? Math.max(p.strike - spot, 0) : Math.max(spot - p.strike, 0);
+              pl = (p.prem - intrinsic) * 100 * p.qty;
+              statusHtml = '<span class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">Assigned</span>';
+            }
+          } else {
+            const intrinsic = p.type === 'CALL' ? Math.max((spot || 0) - p.strike, 0) : Math.max(p.strike - (spot || 0), 0);
+            pl = (intrinsic - p.prem) * 100 * p.qty;
+            statusHtml = '<span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-bold">Closed</span>';
+          }
+
+          totalRealized += pl;
+          if (isThisMonth) {
+            thisMonthRealized += pl;
+          } else if (pYear === lastMonthYear && pMonth === lastMonth) {
+            lastMonthRealized += pl;
+          }
+        } else {
+          if (p.action === 'SELL') {
+            pl = p.prem * 100 * p.qty;
+          } else {
+            pl = 0;
+          }
+          statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
+          totalUnrealized += pl;
+          if (isThisMonth) {
+            thisMonthUnrealized += pl;
+          }
+        }
+
+        const plColor = pl >= 0 ? 'text-emerald-700' : 'text-rose-700';
+        const plPrefix = pl >= 0 ? '+$' : '-$';
+        const plDisplay = `${plPrefix}${Math.abs(pl).toFixed(2)}`;
+
+        const actionBadge = p.action === 'SELL'
+          ? '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">SELL</span>'
+          : '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">BUY</span>';
+
+        const rowBg = getExpColor(p.exp, posColorMap);
+
+        const tr = document.createElement('tr');
+        tr.className = `border-b ${rowBg}`;
+        tr.innerHTML = `
+          <td class="p-1.5 border-r whitespace-nowrap">${actionBadge}</td>
+          <td class="p-1.5 border-r whitespace-nowrap font-bold">${p.ticker} $${p.strike} ${p.type} (x${p.qty})</td>
+          <td class="p-1.5 border-r whitespace-nowrap text-slate-700 font-mono font-bold">${p.exp}</td>
+          <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
+          <td class="p-1.5 border-r whitespace-nowrap font-mono font-bold ${plColor}">${plDisplay}</td>
+          <td class="p-1.5 border-r whitespace-nowrap">${statusHtml}</td>
+          <td class="p-1.5 text-center">
+            <button onclick="deletePosition(${p.id})" class="text-rose-600 hover:text-rose-800 font-bold">✕</button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      const fmt = (val) => `${val >= 0 ? '+$' : '-$'}${Math.abs(val).toFixed(2)}`;
+      const cls = (val) => `text-xs font-extrabold font-mono ${val >= 0 ? 'text-emerald-700' : 'text-rose-700'}`;
+
+      const totEl = document.getElementById('totalRealized');
+      totEl.innerText = fmt(totalRealized);
+      totEl.className = cls(totalRealized);
+
+      const lastEl = document.getElementById('lastMonthRealized');
+      lastEl.innerText = fmt(lastMonthRealized);
+      lastEl.className = cls(lastMonthRealized);
+
+      const thisEl = document.getElementById('thisMonthRealized');
+      thisEl.innerText = fmt(thisMonthRealized);
+      thisEl.className = cls(thisMonthRealized);
+
+      const thisUnEl = document.getElementById('thisMonthUnrealized');
+      thisUnEl.innerText = fmt(thisMonthUnrealized);
+      thisUnEl.className = cls(thisMonthUnrealized);
+
+      const totUnEl = document.getElementById('totalUnrealized');
+      totUnEl.innerText = fmt(totalUnrealized);
+      totUnEl.className = cls(totalUnrealized);
     }
 
     async function fetchData() {
       const btn = document.getElementById('refreshBtn');
       const status = document.getElementById('status');
       btn.disabled = true;
-      status.innerText = "Fetching live market data...";
+      status.innerText = "Fetching live quotes...";
 
-      const tickerInput = document.getElementById('tickers').value;
-      const tickers = tickerInput.split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
-      const deltaTarget = parseFloat(document.getElementById('delta').value) || 0.15;
-      const today = new Date();
-
-      const market = {};
-      const puts = { '7': {}, '14': {}, '21': {}, '30': {} };
-      const calls = { '7': {}, '14': {}, '21': {}, '30': {} };
+      const tickers = document.getElementById('tickers').value;
+      const delta = document.getElementById('delta').value;
 
       try {
-        for (const ticker of tickers) {
-          const raw = await fetchTickerOptions(ticker);
-          const resultData = raw.optionChain?.result?.[0];
-          if (!resultData) continue;
+        const res = await fetch(`/api/data?tickers=${encodeURIComponent(tickers)}&delta=${delta}`);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        globalData = await res.json();
 
-          const spot = resultData.quote?.regularMarketPrice || 0;
-          const expTimestamps = resultData.expirationDates || [];
-          market[ticker] = { spot };
-
-          const targetToTs = {};
-          for (const tgt of TARGET_DAYS) {
-            let closest = null;
-            let minDiff = Infinity;
-            for (const ts of expTimestamps) {
-              const expDate = new Date(ts * 1000);
-              if (expDate <= today) continue;
-              const diff = Math.abs((expDate - today) / (1000 * 60 * 60 * 24) - tgt);
-              if (diff < minDiff) {
-                minDiff = diff;
-                closest = ts;
-              }
-            }
-            if (closest) targetToTs[tgt] = closest;
-          }
-
-          const optionsList = resultData.options?.[0] || {};
-          const currentPuts = optionsList.puts || [];
-          const currentCalls = optionsList.calls || [];
-
-          for (const tgt of TARGET_DAYS) {
-            const ts = targetToTs[tgt];
-            if (!ts) continue;
-
-            const expDate = new Date(ts * 1000);
-            const bDays = countBusinessDays(today, expDate);
-            const T = bDays / 252.0;
-            const expMonth = expDate.toLocaleString('en-US', { month: 'short' });
-            const expDay = String(expDate.getDate()).padStart(2, '0');
-            const expStacked = `${expMonth} ${expDay}<br><span class='text-[9px] text-slate-400 font-mono'>(${bDays}d)</span>`;
-            const rawExp = expDate.toISOString().split('T')[0];
-
-            // Best Put
-            let bestPut = null, minPDiff = Infinity;
-            for (const p of currentPuts) {
-              const K = p.strike, iv = p.impliedVolatility || 0.5;
-              const d = calcPutDelta(spot, K, T, 0.05, iv);
-              const diff = Math.abs(d - (-deltaTarget));
-              if (diff < minPDiff) {
-                minPDiff = diff;
-                bestPut = p;
-              }
-            }
-
-            if (bestPut) {
-              const prem = bestPut.bid > 0 ? bestPut.bid : (bestPut.lastPrice || 0);
-              const yieldPct = bestPut.strike > 0 ? (prem / bestPut.strike) * 100 : 0;
-              const ann = (yieldPct * 252) / bDays;
-              const pctDiff = ((bestPut.strike - spot) / spot) * 100;
-              puts[String(tgt)][ticker] = {
-                raw_exp: rawExp,
-                exp: expStacked,
-                strike: bestPut.strike.toFixed(2),
-                pct_diff: (pctDiff >= 0 ? '+' : '') + pctDiff.toFixed(1) + '%',
-                iv: ((bestPut.impliedVolatility || 0) * 100).toFixed(1),
-                prem: prem.toFixed(2),
-                ann: ann.toFixed(1)
-              };
-            }
-
-            // Best Call
-            let bestCall = null, minCDiff = Infinity;
-            for (const c of currentCalls) {
-              const K = c.strike, iv = c.impliedVolatility || 0.5;
-              const d = calcCallDelta(spot, K, T, 0.05, iv);
-              const diff = Math.abs(d - deltaTarget);
-              if (diff < minCDiff) {
-                minCDiff = diff;
-                bestCall = c;
-              }
-            }
-
-            if (bestCall) {
-              const prem = bestCall.bid > 0 ? bestCall.bid : (bestCall.lastPrice || 0);
-              const yieldPct = spot > 0 ? (prem / spot) * 100 : 0;
-              const ann = (yieldPct * 252) / bDays;
-              const pctDiff = ((bestCall.strike - spot) / spot) * 100;
-              calls[String(tgt)][ticker] = {
-                raw_exp: rawExp,
-                exp: expStacked,
-                strike: bestCall.strike.toFixed(2),
-                pct_diff: (pctDiff >= 0 ? '+' : '') + pctDiff.toFixed(1) + '%',
-                iv: ((bestCall.impliedVolatility || 0) * 100).toFixed(1),
-                prem: prem.toFixed(2),
-                ann: ann.toFixed(1)
-              };
-            }
-          }
-        }
-
-        globalData = { market, tickers, targets: TARGET_DAYS, puts, calls };
-        renderPills(tickers);
+        renderPills(globalData.tickers);
         renderBothTables();
         renderPositionsAndPL();
+
         status.innerText = "Updated: " + new Date().toLocaleTimeString();
       } catch (err) {
-        console.error(err);
-        status.innerText = "Error loading market data.";
+        status.innerText = "Error loading data.";
       } finally {
         btn.disabled = false;
       }
@@ -556,117 +592,9 @@ HTML_CONTENT = """<!DOCTYPE html>
       });
     }
 
-    function renderPositionsAndPL() {
-      const tbody = document.getElementById('positionsBody');
-      const now = new Date();
-      const currentYear = now.getFullYear();
-      const currentMonth = now.getMonth();
-
-      let lastMonthYear = currentYear;
-      let lastMonth = currentMonth - 1;
-      if (lastMonth < 0) {
-        lastMonth = 11;
-        lastMonthYear--;
-      }
-
-      const filteredPositions = [];
-      cloudPositions.forEach(p => {
-        const parts = p.exp.split('-');
-        const pYear = parseInt(parts[0], 10);
-        const pMonth = parseInt(parts[1], 10) - 1;
-        if (pYear > currentYear || (pYear === currentYear && pMonth >= currentMonth)) {
-          filteredPositions.push(p);
-        }
-      });
-
-      filteredPositions.sort((a, b) => {
-        const dateDiff = new Date(a.exp) - new Date(b.exp);
-        if (dateDiff !== 0) return dateDiff;
-        return a.ticker.localeCompare(b.ticker);
-      });
-
-      if (filteredPositions.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="p-2 text-center text-slate-400">No active positions for this month.</td></tr>';
-        return;
-      }
-
-      tbody.innerHTML = '';
-      const todayStr = now.toISOString().split('T')[0];
-      let totalRealized = 0, thisMonthRealized = 0, lastMonthRealized = 0, thisMonthUnrealized = 0, totalUnrealized = 0;
-      const posColorMap = {};
-
-      filteredPositions.forEach(p => {
-        const parts = p.exp.split('-');
-        const pYear = parseInt(parts[0], 10);
-        const pMonth = parseInt(parts[1], 10) - 1;
-        const isExpired = p.exp < todayStr;
-        const isThisMonth = (pYear === currentYear && pMonth === currentMonth);
-        const spot = globalData?.market?.[p.ticker]?.spot || null;
-
-        let pl = 0;
-        let statusHtml = '';
-
-        if (isExpired) {
-          if (p.action === 'SELL') {
-            if ((p.type === 'PUT' && (!spot || spot >= p.strike)) || (p.type === 'CALL' && (!spot || spot <= p.strike))) {
-              pl = p.prem * 100 * p.qty;
-              statusHtml = '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">Expired (Win)</span>';
-            } else {
-              const intrinsic = p.type === 'PUT' ? Math.max(p.strike - spot, 0) : Math.max(spot - p.strike, 0);
-              pl = (p.prem - intrinsic) * 100 * p.qty;
-              statusHtml = '<span class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">Assigned</span>';
-            }
-          } else {
-            const intrinsic = p.type === 'CALL' ? Math.max((spot || 0) - p.strike, 0) : Math.max(p.strike - (spot || 0), 0);
-            pl = (intrinsic - p.prem) * 100 * p.qty;
-            statusHtml = '<span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-bold">Closed</span>';
-          }
-
-          totalRealized += pl;
-          if (isThisMonth) thisMonthRealized += pl;
-          else if (pYear === lastMonthYear && pMonth === lastMonth) lastMonthRealized += pl;
-        } else {
-          pl = p.action === 'SELL' ? (p.prem * 100 * p.qty) : 0;
-          statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
-          totalUnrealized += pl;
-          if (isThisMonth) thisMonthUnrealized += pl;
-        }
-
-        const plColor = pl >= 0 ? 'text-emerald-700' : 'text-rose-700';
-        const plPrefix = pl >= 0 ? '+$' : '-$';
-        const plDisplay = `${plPrefix}${Math.abs(pl).toFixed(2)}`;
-
-        const actionBadge = p.action === 'SELL'
-          ? '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">SELL</span>'
-          : '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">BUY</span>';
-
-        const rowBg = getExpColor(p.exp, posColorMap);
-        const tr = document.createElement('tr');
-        tr.className = `border-b ${rowBg}`;
-        tr.innerHTML = `
-          <td class="p-1.5 border-r whitespace-nowrap">${actionBadge}</td>
-          <td class="p-1.5 border-r whitespace-nowrap font-bold">${p.ticker} $${p.strike} ${p.type} (x${p.qty})</td>
-          <td class="p-1.5 border-r whitespace-nowrap text-slate-700 font-mono font-bold">${p.exp}</td>
-          <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
-          <td class="p-1.5 border-r whitespace-nowrap font-mono font-bold ${plColor}">${plDisplay}</td>
-          <td class="p-1.5 border-r whitespace-nowrap">${statusHtml}</td>
-          <td class="p-1.5 text-center">
-            <button onclick="deletePosition(${p.id})" class="text-rose-600 hover:text-rose-800 font-bold">✕</button>
-          </td>
-        `;
-        tbody.appendChild(tr);
-      });
-
-      const fmt = (val) => `${val >= 0 ? '+$' : '-$'}${Math.abs(val).toFixed(2)}`;
-      document.getElementById('totalRealized').innerText = fmt(totalRealized);
-      document.getElementById('lastMonthRealized').innerText = fmt(lastMonthRealized);
-      document.getElementById('thisMonthRealized').innerText = fmt(thisMonthRealized);
-      document.getElementById('thisMonthUnrealized').innerText = fmt(thisMonthUnrealized);
-      document.getElementById('totalUnrealized').innerText = fmt(totalUnrealized);
-    }
-
     loadCloudPositions();
     fetchData();
+    setInterval(fetchData, 60000);
   </script>
 </body>
 </html>
@@ -694,6 +622,168 @@ def remove_position(pos_id: int):
     if not success:
         raise HTTPException(status_code=500, detail="Failed to delete from GitHub")
     return {"status": "success"}
+
+@app.get("/api/data")
+def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
+    cache_key = f"{tickers}_{delta}"
+    now = time.time()
+    
+    if cache_key in DATA_CACHE and (now - DATA_CACHE[cache_key]["time"]) < CACHE_TTL:
+        return DATA_CACHE[cache_key]["data"]
+
+    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    target_periods = [7, 14, 21, 30]
+    today = datetime.date.today()
+    
+    market_data = {}
+    results_puts = {str(t): {} for t in target_periods}
+    results_calls = {str(t): {} for t in target_periods}
+
+    for ticker in ticker_list:
+        try:
+            # Single ultra-fast query to Yahoo's native options chart API
+            base_url = f"https://query1.finance.yahoo.com/v7/finance/options/{ticker}"
+            resp = requests.get(base_url, headers=HEADERS, timeout=4)
+            data = resp.json()
+            
+            result_list = data.get("optionChain", {}).get("result", [])
+            if not result_list:
+                continue
+
+            chain_data = result_list[0]
+            quote = chain_data.get("quote", {})
+            spot_price = quote.get("regularMarketPrice", 0)
+            timestamps = chain_data.get("expirationDates", [])
+
+            if spot_price <= 0 or not timestamps:
+                continue
+
+            market_data[ticker] = {"spot": round(spot_price, 2)}
+
+            # Map target days to closest expiration timestamps
+            target_to_ts = {}
+            for target in target_periods:
+                closest_ts = None
+                min_diff = float("inf")
+                for ts in timestamps:
+                    exp_date = datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).date()
+                    if exp_date <= today:
+                        continue
+                    diff = abs((exp_date - today).days - target)
+                    if diff < min_diff:
+                        min_diff = diff
+                        closest_ts = ts
+                if closest_ts:
+                    target_to_ts[target] = closest_ts
+
+            # Fetch option chain for unique dates
+            loaded_chains = {}
+            unique_ts = set(target_to_ts.values())
+            for ts in unique_ts:
+                try:
+                    ts_url = f"{base_url}?date={ts}"
+                    ts_resp = requests.get(ts_url, headers=HEADERS, timeout=4).json()
+                    res_opts = ts_resp.get("optionChain", {}).get("result", [])
+                    if res_opts and res_opts[0].get("options"):
+                        loaded_chains[ts] = res_opts[0]["options"][0]
+                except Exception:
+                    continue
+
+            # Calculate Greeks from the raw JSON (zero Pandas overhead)
+            for target, ts in target_to_ts.items():
+                if ts not in loaded_chains:
+                    continue
+
+                opts = loaded_chains[ts]
+                exp_date = datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).date()
+                raw_exp_str = exp_date.strftime("%Y-%m-%d")
+                b_days = count_business_days(today, exp_date)
+                T = max(b_days, 1) / 252.0
+                r = 0.05
+
+                exp_short = exp_date.strftime("%b %d")
+                exp_stacked = f"{exp_short}<br><span class='text-[9px] text-slate-400 font-mono'>({b_days}d)</span>"
+
+                # Puts
+                best_put = None
+                min_p_diff = float("inf")
+                for row in opts.get("puts", []):
+                    try:
+                        K = float(row.get('strike', 0))
+                        iv = float(row.get('impliedVolatility', 0.5))
+                        if K <= 0: continue
+                        d = calc_put_delta(spot_price, K, T, r, sigma=iv)
+                        diff = abs(d - (-delta))
+                        if diff < min_p_diff:
+                            min_p_diff = diff
+                            best_put = (row, K, iv)
+                    except Exception:
+                        continue
+
+                if best_put:
+                    row, k_val, iv_val = best_put
+                    bid_val = float(row.get('bid', 0))
+                    last_val = float(row.get('lastPrice', 0))
+                    prem = bid_val if bid_val > 0 else last_val
+                    yield_pct = (prem / k_val * 100) if k_val > 0 else 0
+                    ann_pct = yield_pct * 252 / b_days
+                    pct_diff = ((k_val - spot_price) / spot_price) * 100
+                    results_puts[str(target)][ticker] = {
+                        "raw_exp": raw_exp_str,
+                        "exp": exp_stacked,
+                        "strike": round(k_val, 2),
+                        "pct_diff": f"{pct_diff:+.1f}%",
+                        "iv": round(iv_val * 100, 1),
+                        "prem": round(prem, 2),
+                        "ann": round(ann_pct, 1)
+                    }
+
+                # Calls
+                best_call = None
+                min_c_diff = float("inf")
+                for row in opts.get("calls", []):
+                    try:
+                        K = float(row.get('strike', 0))
+                        iv = float(row.get('impliedVolatility', 0.5))
+                        if K <= 0: continue
+                        d = calc_call_delta(spot_price, K, T, r, sigma=iv)
+                        diff = abs(d - delta)
+                        if diff < min_c_diff:
+                            min_c_diff = diff
+                            best_call = (row, K, iv)
+                    except Exception:
+                        continue
+
+                if best_call:
+                    row, k_val, iv_val = best_call
+                    bid_val = float(row.get('bid', 0))
+                    last_val = float(row.get('lastPrice', 0))
+                    prem = bid_val if bid_val > 0 else last_val
+                    yield_pct = (prem / spot_price * 100) if spot_price > 0 else 0
+                    ann_pct = yield_pct * 252 / b_days
+                    pct_diff = ((k_val - spot_price) / spot_price) * 100
+                    results_calls[str(target)][ticker] = {
+                        "raw_exp": raw_exp_str,
+                        "exp": exp_stacked,
+                        "strike": round(k_val, 2),
+                        "pct_diff": f"{pct_diff:+.1f}%",
+                        "iv": round(iv_val * 100, 1),
+                        "prem": round(prem, 2),
+                        "ann": round(ann_pct, 1)
+                    }
+
+        except Exception:
+            continue
+
+    result = {
+        "market": market_data,
+        "puts": results_puts,
+        "calls": results_calls,
+        "tickers": list(market_data.keys()),
+        "targets": target_periods
+    }
+    DATA_CACHE[cache_key] = {"time": now, "data": result}
+    return result
 
 @app.get("/", response_class=HTMLResponse)
 def render_index():
