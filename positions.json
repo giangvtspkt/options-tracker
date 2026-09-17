@@ -98,5 +98,15 @@
     "prem": 0.3,
     "qty": 1,
     "exp": "2026-09-18"
+  },
+  {
+    "id": 1789653030770,
+    "action": "SELL",
+    "type": "CALL",
+    "ticker": "IREN",
+    "strike": 46.5,
+    "prem": 0.3,
+    "qty": 1,
+    "exp": "2026-09-18"
   }
 ]
