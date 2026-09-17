@@ -20,7 +20,7 @@ GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
 DATA_CACHE = {}
 CACHE_TTL = 180
 
-# Configure custom headers so Yahoo Finance doesn't throttle Render
+# Configure custom headers
 YF_SESSION = requests.Session()
 YF_SESSION.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -693,7 +693,6 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
         return DATA_CACHE[cache_key]["data"]
 
     ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
-    # Replaced 45 with 21 days: [7, 14, 21, 30]
     target_periods = [7, 14, 21, 30]
     today = datetime.date.today()
     
@@ -703,19 +702,25 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
 
     for ticker in ticker_list:
         try:
+            # 1. Fetch S1/R1 tech levels via yfinance
             tkr = yf.Ticker(ticker, session=YF_SESSION)
-            spot_price = tkr.fast_info.get("lastPrice", 0)
-            if not spot_price or spot_price <= 0:
-                hist_1d = tkr.history(period="1d")
-                if not hist_1d.empty:
-                    spot_price = float(hist_1d['Close'].iloc[-1])
-            
-            expirations = list(tkr.options)
             df_hist = tkr.history(period="30d")
+            
+            # 2. Fetch Native Options Data without Pandas
+            base_url = f"https://query2.finance.yahoo.com/v7/finance/options/{ticker}"
+            res = requests.get(base_url, headers=YF_SESSION.headers, timeout=5).json()
+            
+            result_data = res.get("optionChain", {}).get("result", [])
+            if not result_data: 
+                continue
+            
+            quote = result_data[0].get("quote", {})
+            spot_price = quote.get("regularMarketPrice", 0)
+            timestamps = result_data[0].get("expirationDates", [])
+            
+            if spot_price <= 0 or not timestamps: 
+                continue
         except Exception:
-            continue
-
-        if not expirations or spot_price <= 0:
             continue
 
         if not df_hist.empty and len(df_hist) >= 2:
@@ -741,40 +746,43 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
             "resistance": round(max(r1, rolling_resistance), 2)
         }
 
-        # Match closest target periods to expiration dates
-        target_to_exp = {}
+        # Match closest target periods to expiration timestamps
+        target_to_ts = {}
         for target in target_periods:
             closest = None
             min_diff = float("inf")
-            for exp in expirations:
-                try:
-                    exp_date = datetime.datetime.strptime(exp, "%Y-%m-%d").date()
-                except Exception:
-                    continue
+            for ts in timestamps:
+                exp_date = datetime.datetime.utcfromtimestamp(ts).date()
                 if exp_date <= today:
                     continue
                 diff = abs((exp_date - today).days - target)
                 if diff < min_diff:
                     min_diff = diff
-                    closest = exp
+                    closest = ts
             if closest:
-                target_to_exp[target] = closest
+                target_to_ts[target] = closest
 
-        # Download option chain for UNIQUE dates only with browser user-agent
-        unique_exps = set(target_to_exp.values())
+        # Download needed option chains natively (Zero Pandas Overhead)
+        unique_ts = set(target_to_ts.values())
         loaded_chains = {}
-        for exp in unique_exps:
+        for ts in unique_ts:
             try:
-                loaded_chains[exp] = tkr.option_chain(exp)
+                url = f"{base_url}?date={ts}"
+                c_res = requests.get(url, headers=YF_SESSION.headers, timeout=5).json()
+                c_result = c_res.get("optionChain", {}).get("result", [])
+                if c_result and c_result[0].get("options"):
+                    loaded_chains[ts] = c_result[0]["options"][0]
             except Exception:
                 continue
 
-        # Calculate Greeks and strikes from cached chains
-        for target, exp in target_to_exp.items():
-            if exp not in loaded_chains:
+        # Calculate Greeks from raw JSON dictionaries
+        for target, ts in target_to_ts.items():
+            if ts not in loaded_chains:
                 continue
-            chain = loaded_chains[exp]
-            exp_date = datetime.datetime.strptime(exp, "%Y-%m-%d").date()
+                
+            opts = loaded_chains[ts]
+            exp_date = datetime.datetime.utcfromtimestamp(ts).date()
+            raw_exp_str = exp_date.strftime("%Y-%m-%d")
             b_days = count_business_days(today, exp_date)
             T = max(b_days, 1) / 252.0
             r = 0.05
@@ -782,77 +790,79 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
             exp_short = exp_date.strftime("%b %d")
             exp_stacked = f"{exp_short}<br><span class='text-[9px] text-slate-400 font-mono'>({b_days}d)</span>"
 
-            # Puts
-            puts = chain.puts
-            if puts is not None and not puts.empty:
-                best_put = None
-                min_p_diff = float("inf")
-                for _, row in puts.iterrows():
-                    try:
-                        K = float(row['strike'])
-                        iv = float(row['impliedVolatility']) if ('impliedVolatility' in row and not math.isnan(row['impliedVolatility'])) else 0.5
-                        d = calc_put_delta(spot_price, K, T, r, sigma=iv)
-                        diff = abs(d - (-delta))
-                        if diff < min_p_diff:
-                            min_p_diff = diff
-                            best_put = (row, K, iv)
-                    except Exception:
-                        continue
+            # 1. Evaluate Puts
+            best_put = None
+            min_p_diff = float("inf")
+            for row in opts.get("puts", []):
+                try:
+                    K = float(row.get('strike', 0))
+                    iv = float(row.get('impliedVolatility', 0.5))
+                    if K <= 0: continue
+                    
+                    d = calc_put_delta(spot_price, K, T, r, sigma=iv)
+                    diff = abs(d - (-delta))
+                    if diff < min_p_diff:
+                        min_p_diff = diff
+                        best_put = (row, K, iv)
+                except Exception:
+                    continue
 
-                if best_put is not None:
-                    row, k_val, iv_val = best_put
-                    bid_val = float(row.get('bid', 0)) if not math.isnan(row.get('bid', 0)) else 0
-                    last_val = float(row.get('lastPrice', 0)) if not math.isnan(row.get('lastPrice', 0)) else 0
-                    prem = bid_val if bid_val > 0 else last_val
-                    yield_pct = (prem / k_val * 100) if k_val > 0 else 0
-                    ann_pct = yield_pct * 252 / b_days
-                    pct_diff = ((k_val - spot_price) / spot_price) * 100
-                    results_puts[str(target)][ticker] = {
-                        "raw_exp": exp,
-                        "exp": exp_stacked,
-                        "strike": round(k_val, 2),
-                        "pct_diff": f"{pct_diff:+.1f}%",
-                        "iv": round(iv_val * 100, 1),
-                        "prem": round(prem, 2),
-                        "ann": round(ann_pct, 1),
-                        "is_safe": k_val < market_data[ticker]["support"]
-                    }
+            if best_put is not None:
+                row, k_val, iv_val = best_put
+                bid_val = float(row.get('bid', 0))
+                last_val = float(row.get('lastPrice', 0))
+                prem = bid_val if bid_val > 0 else last_val
+                
+                yield_pct = (prem / k_val * 100) if k_val > 0 else 0
+                ann_pct = yield_pct * 252 / b_days
+                pct_diff = ((k_val - spot_price) / spot_price) * 100
+                results_puts[str(target)][ticker] = {
+                    "raw_exp": raw_exp_str,
+                    "exp": exp_stacked,
+                    "strike": round(k_val, 2),
+                    "pct_diff": f"{pct_diff:+.1f}%",
+                    "iv": round(iv_val * 100, 1),
+                    "prem": round(prem, 2),
+                    "ann": round(ann_pct, 1),
+                    "is_safe": k_val < market_data[ticker]["support"]
+                }
 
-            # Calls
-            calls = chain.calls
-            if calls is not None and not calls.empty:
-                best_call = None
-                min_c_diff = float("inf")
-                for _, row in calls.iterrows():
-                    try:
-                        K = float(row['strike'])
-                        iv = float(row['impliedVolatility']) if ('impliedVolatility' in row and not math.isnan(row['impliedVolatility'])) else 0.5
-                        d = calc_call_delta(spot_price, K, T, r, sigma=iv)
-                        diff = abs(d - delta)
-                        if diff < min_c_diff:
-                            min_c_diff = diff
-                            best_call = (row, K, iv)
-                    except Exception:
-                        continue
+            # 2. Evaluate Calls
+            best_call = None
+            min_c_diff = float("inf")
+            for row in opts.get("calls", []):
+                try:
+                    K = float(row.get('strike', 0))
+                    iv = float(row.get('impliedVolatility', 0.5))
+                    if K <= 0: continue
+                    
+                    d = calc_call_delta(spot_price, K, T, r, sigma=iv)
+                    diff = abs(d - delta)
+                    if diff < min_c_diff:
+                        min_c_diff = diff
+                        best_call = (row, K, iv)
+                except Exception:
+                    continue
 
-                if best_call is not None:
-                    row, k_val, iv_val = best_call
-                    bid_val = float(row.get('bid', 0)) if not math.isnan(row.get('bid', 0)) else 0
-                    last_val = float(row.get('lastPrice', 0)) if not math.isnan(row.get('lastPrice', 0)) else 0
-                    prem = bid_val if bid_val > 0 else last_val
-                    yield_pct = (prem / spot_price * 100) if spot_price > 0 else 0
-                    ann_pct = yield_pct * 252 / b_days
-                    pct_diff = ((k_val - spot_price) / spot_price) * 100
-                    results_calls[str(target)][ticker] = {
-                        "raw_exp": exp,
-                        "exp": exp_stacked,
-                        "strike": round(k_val, 2),
-                        "pct_diff": f"{pct_diff:+.1f}%",
-                        "iv": round(float(best_call.get('impliedVolatility', 0)) * 100, 1),
-                        "prem": round(prem, 2),
-                        "ann": round(ann_pct, 1),
-                        "is_safe": k_val > market_data[ticker]["resistance"]
-                    }
+            if best_call is not None:
+                row, k_val, iv_val = best_call
+                bid_val = float(row.get('bid', 0))
+                last_val = float(row.get('lastPrice', 0))
+                prem = bid_val if bid_val > 0 else last_val
+                
+                yield_pct = (prem / spot_price * 100) if spot_price > 0 else 0
+                ann_pct = yield_pct * 252 / b_days
+                pct_diff = ((k_val - spot_price) / spot_price) * 100
+                results_calls[str(target)][ticker] = {
+                    "raw_exp": raw_exp_str,
+                    "exp": exp_stacked,
+                    "strike": round(k_val, 2),
+                    "pct_diff": f"{pct_diff:+.1f}%",
+                    "iv": round(iv_val * 100, 1),
+                    "prem": round(prem, 2),
+                    "ann": round(ann_pct, 1),
+                    "is_safe": k_val > market_data[ticker]["resistance"]
+                }
 
     result = {
         "market": market_data,
