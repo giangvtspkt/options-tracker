@@ -9,6 +9,7 @@ import os
 import json
 import base64
 import requests
+from concurrent.futures import ThreadPoolExecutor
 
 app = FastAPI()
 
@@ -16,9 +17,9 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
 
-# In-memory fast cache
+# In-memory fast cache (90 seconds)
 DATA_CACHE = {}
-CACHE_TTL = 60
+CACHE_TTL = 90
 
 def norm_cdf(x):
     return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
@@ -127,30 +128,34 @@ HTML_CONTENT = """<!DOCTYPE html>
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
     <div class="flex items-center justify-between mb-2">
       <h2 class="text-xs font-bold text-slate-800 flex items-center gap-1">
-        <span>💼</span> Performance &amp; Positions (This Month Only)
+        <span>💼</span> Performance &amp; Active Positions
       </h2>
       <button onclick="toggleAddForm()" id="toggleFormBtn" class="bg-slate-800 text-white text-[10px] font-bold px-2.5 py-1 rounded-md">
         + Add Position
       </button>
     </div>
 
-    <!-- Reordered Metric Cards: Total -> Last Month -> This Month -> Unrealized -->
-    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+    <!-- 5 Separated Metric Cards -->
+    <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-3">
       <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
         <div class="text-[10px] font-bold text-slate-500">Total Realized</div>
         <div id="totalRealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
       </div>
       <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
-        <div class="text-[10px] font-bold text-slate-500">Last Month Realized</div>
+        <div class="text-[10px] font-bold text-slate-500">Last Mo Realized</div>
         <div id="lastMonthRealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
       </div>
       <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
-        <div class="text-[10px] font-bold text-slate-500">This Month Realized</div>
+        <div class="text-[10px] font-bold text-slate-500">This Mo Realized</div>
         <div id="thisMonthRealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
       </div>
       <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
-        <div class="text-[10px] font-bold text-slate-500">Unrealized P/L</div>
-        <div id="unrealizedPL" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
+        <div class="text-[10px] font-bold text-slate-500">This Mo Unrealized</div>
+        <div id="thisMonthUnrealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
+      </div>
+      <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center col-span-2 sm:col-span-1">
+        <div class="text-[10px] font-bold text-slate-500">Total Unrealized</div>
+        <div id="totalUnrealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
       </div>
     </div>
 
@@ -285,7 +290,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     let selectedTicker = 'ALL';
     let cloudPositions = [];
 
-    // Distinct palette to color-code identical expiration dates
     const EXP_COLOR_PALETTE = [
       'bg-indigo-50/80',
       'bg-amber-50/80',
@@ -385,7 +389,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         fetch('/api/positions/prune-old', { credentials: 'omit' }).catch(() => {});
       }
 
-      // Sort by Exp (earliest dates on top, latest at bottom)
       filteredPositions.sort((a, b) => new Date(a.exp) - new Date(b.exp));
 
       if (filteredPositions.length === 0) {
@@ -393,7 +396,8 @@ HTML_CONTENT = """<!DOCTYPE html>
         document.getElementById('totalRealized').innerText = "$0.00";
         document.getElementById('lastMonthRealized').innerText = "$0.00";
         document.getElementById('thisMonthRealized').innerText = "$0.00";
-        document.getElementById('unrealizedPL').innerText = "$0.00";
+        document.getElementById('thisMonthUnrealized').innerText = "$0.00";
+        document.getElementById('totalUnrealized').innerText = "$0.00";
         return;
       }
 
@@ -403,6 +407,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       let totalRealized = 0;
       let thisMonthRealized = 0;
       let lastMonthRealized = 0;
+      let thisMonthUnrealized = 0;
       let totalUnrealized = 0;
 
       const posColorMap = {};
@@ -412,6 +417,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         const pYear = parseInt(parts[0], 10);
         const pMonth = parseInt(parts[1], 10) - 1;
         const isExpired = p.exp < todayStr;
+        const isThisMonth = (pYear === currentYear && pMonth === currentMonth);
 
         const spot = (globalData && globalData.market && globalData.market[p.ticker]) 
           ? globalData.market[p.ticker].spot 
@@ -437,7 +443,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           }
 
           totalRealized += pl;
-          if (pYear === currentYear && pMonth === currentMonth) {
+          if (isThisMonth) {
             thisMonthRealized += pl;
           } else if (pYear === lastMonthYear && pMonth === lastMonth) {
             lastMonthRealized += pl;
@@ -449,7 +455,11 @@ HTML_CONTENT = """<!DOCTYPE html>
             pl = 0;
           }
           statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
+          
           totalUnrealized += pl;
+          if (isThisMonth) {
+            thisMonthUnrealized += pl;
+          }
         }
 
         const plColor = pl >= 0 ? 'text-emerald-700' : 'text-rose-700';
@@ -493,9 +503,13 @@ HTML_CONTENT = """<!DOCTYPE html>
       thisEl.innerText = fmt(thisMonthRealized);
       thisEl.className = cls(thisMonthRealized);
 
-      const unEl = document.getElementById('unrealizedPL');
-      unEl.innerText = fmt(totalUnrealized);
-      unEl.className = cls(totalUnrealized);
+      const thisUnEl = document.getElementById('thisMonthUnrealized');
+      thisUnEl.innerText = fmt(thisMonthUnrealized);
+      thisUnEl.className = cls(thisMonthUnrealized);
+
+      const totUnEl = document.getElementById('totalUnrealized');
+      totUnEl.innerText = fmt(totalUnrealized);
+      totUnEl.className = cls(totalUnrealized);
     }
 
     async function fetchData() {
@@ -613,7 +627,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         const targetKey = String(tgt);
         const targetDict = results[tgt] || results[targetKey] || {};
 
-        // Derive an expiration date string from the row to color matching dates together
         let rowExpKey = '';
         for (const t of tickers) {
           if (targetDict[t] && targetDict[t].raw_exp) {
@@ -703,6 +716,111 @@ def prune_old_positions():
         save_positions_to_github(kept)
     return {"status": "pruned", "remaining": len(kept)}
 
+def process_target_for_ticker(tkr, ticker, spot_price, target, expirations, today, market_data, delta):
+    closest_exp = None
+    min_diff = float("inf")
+
+    for exp in expirations:
+        try:
+            exp_date = datetime.datetime.strptime(exp, "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if exp_date <= today:
+            continue
+        days_diff = abs((exp_date - today).days - target)
+        if days_diff < min_diff:
+            min_diff = days_diff
+            closest_exp = exp
+
+    if not closest_exp:
+        return target, ticker, None, None
+
+    try:
+        exp_date = datetime.datetime.strptime(closest_exp, "%Y-%m-%d").date()
+        b_days = count_business_days(today, exp_date)
+        chain = tkr.option_chain(closest_exp)
+        puts, calls = chain.puts, chain.calls
+    except Exception:
+        return target, ticker, None, None
+
+    T = max(b_days, 1) / 252.0
+    r = 0.05
+    
+    exp_short = exp_date.strftime("%b %d")
+    exp_stacked = f"{exp_short}<br><span class='text-[9px] text-slate-400 font-mono'>({b_days}d)</span>"
+
+    put_data = None
+    if puts is not None and not puts.empty:
+        best_put = None
+        min_p_diff = float("inf")
+        for _, row in puts.iterrows():
+            try:
+                K = float(row['strike'])
+                iv = float(row['impliedVolatility']) if ('impliedVolatility' in row and not math.isnan(row['impliedVolatility'])) else 0.5
+                d = calc_put_delta(spot_price, K, T, r, sigma=iv)
+                diff = abs(d - (-delta))
+                if diff < min_p_diff:
+                    min_p_diff = diff
+                    best_put = (row, K, iv)
+            except Exception:
+                continue
+
+        if best_put is not None:
+            row, k_val, iv_val = best_put
+            bid_val = float(row.get('bid', 0)) if not math.isnan(row.get('bid', 0)) else 0
+            last_val = float(row.get('lastPrice', 0)) if not math.isnan(row.get('lastPrice', 0)) else 0
+            prem = bid_val if bid_val > 0 else last_val
+            yield_pct = (prem / k_val * 100) if k_val > 0 else 0
+            ann_pct = yield_pct * 252 / b_days
+            pct_diff = ((k_val - spot_price) / spot_price) * 100
+            put_data = {
+                "raw_exp": closest_exp,
+                "exp": exp_stacked,
+                "strike": round(k_val, 2),
+                "pct_diff": f"{pct_diff:+.1f}%",
+                "iv": round(iv_val * 100, 1),
+                "prem": round(prem, 2),
+                "ann": round(ann_pct, 1),
+                "is_safe": k_val < market_data[ticker]["support"]
+            }
+
+    call_data = None
+    if calls is not None and not calls.empty:
+        best_call = None
+        min_c_diff = float("inf")
+        for _, row in calls.iterrows():
+            try:
+                K = float(row['strike'])
+                iv = float(row['impliedVolatility']) if ('impliedVolatility' in row and not math.isnan(row['impliedVolatility'])) else 0.5
+                d = calc_call_delta(spot_price, K, T, r, sigma=iv)
+                diff = abs(d - delta)
+                if diff < min_c_diff:
+                    min_c_diff = diff
+                    best_call = (row, K, iv)
+            except Exception:
+                continue
+
+        if best_call is not None:
+            row, k_val, iv_val = best_call
+            bid_val = float(row.get('bid', 0)) if not math.isnan(row.get('bid', 0)) else 0
+            last_val = float(row.get('lastPrice', 0)) if not math.isnan(row.get('lastPrice', 0)) else 0
+            prem = bid_val if bid_val > 0 else last_val
+            yield_pct = (prem / spot_price * 100) if spot_price > 0 else 0
+            ann_pct = yield_pct * 252 / b_days
+            pct_diff = ((k_val - spot_price) / spot_price) * 100
+            call_data = {
+                "raw_exp": closest_exp,
+                "exp": exp_stacked,
+                "strike": round(k_val, 2),
+                "pct_diff": f"{pct_diff:+.1f}%",
+                "iv": round(float(best_call.get('impliedVolatility', 0)) * 100, 1),
+                "prem": round(prem, 2),
+                "ann": round(ann_pct, 1),
+                "is_safe": k_val > market_data[ticker]["resistance"]
+            }
+
+    return target, ticker, put_data, call_data
+
 @app.get("/api/data")
 def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
     cache_key = f"{tickers}_{delta}"
@@ -716,9 +834,11 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
     today = datetime.date.today()
     
     market_data = {}
+    ticker_objects = {}
     results_puts = {str(t): {} for t in target_periods}
     results_calls = {str(t): {} for t in target_periods}
 
+    # 1. Fetch Spot & Pivots
     for ticker in ticker_list:
         try:
             tkr = yf.Ticker(ticker)
@@ -758,109 +878,24 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
             "support": round(min(s1, rolling_support), 2),
             "resistance": round(max(r1, rolling_resistance), 2)
         }
+        ticker_objects[ticker] = (tkr, spot_price, expirations)
 
-        for target in target_periods:
-            closest_exp = None
-            min_diff = float("inf")
+    # 2. Parallel Option Chains Fetching
+    tasks = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        for ticker, (tkr, spot, exps) in ticker_objects.items():
+            for target in target_periods:
+                tasks.append(executor.submit(
+                    process_target_for_ticker, 
+                    tkr, ticker, spot, target, exps, today, market_data, delta
+                ))
 
-            for exp in expirations:
-                try:
-                    exp_date = datetime.datetime.strptime(exp, "%Y-%m-%d").date()
-                except Exception:
-                    continue
-                if exp_date <= today:
-                    continue
-                days_diff = abs((exp_date - today).days - target)
-                if days_diff < min_diff:
-                    min_diff = days_diff
-                    closest_exp = exp
-
-            if not closest_exp:
-                continue
-
-            try:
-                exp_date = datetime.datetime.strptime(closest_exp, "%Y-%m-%d").date()
-                b_days = count_business_days(today, exp_date)
-                chain = tkr.option_chain(closest_exp)
-                puts, calls = chain.puts, chain.calls
-            except Exception:
-                continue
-
-            T = max(b_days, 1) / 252.0
-            r = 0.05
-            
-            exp_short = exp_date.strftime("%b %d")
-            exp_stacked = f"{exp_short}<br><span class='text-[9px] text-slate-400 font-mono'>({b_days}d)</span>"
-
-            # 1. Puts selection
-            if puts is not None and not puts.empty:
-                best_put = None
-                min_p_diff = float("inf")
-                for _, row in puts.iterrows():
-                    try:
-                        K = float(row['strike'])
-                        iv = float(row['impliedVolatility']) if ('impliedVolatility' in row and not math.isnan(row['impliedVolatility'])) else 0.5
-                        d = calc_put_delta(spot_price, K, T, r, sigma=iv)
-                        diff = abs(d - (-delta))
-                        if diff < min_p_diff:
-                            min_p_diff = diff
-                            best_put = (row, K, iv)
-                    except Exception:
-                        continue
-
-                if best_put is not None:
-                    row, k_val, iv_val = best_put
-                    bid_val = float(row.get('bid', 0)) if not math.isnan(row.get('bid', 0)) else 0
-                    last_val = float(row.get('lastPrice', 0)) if not math.isnan(row.get('lastPrice', 0)) else 0
-                    prem = bid_val if bid_val > 0 else last_val
-                    yield_pct = (prem / k_val * 100) if k_val > 0 else 0
-                    ann_pct = yield_pct * 252 / b_days
-                    pct_diff = ((k_val - spot_price) / spot_price) * 100
-                    results_puts[str(target)][ticker] = {
-                        "raw_exp": closest_exp,
-                        "exp": exp_stacked,
-                        "strike": round(k_val, 2),
-                        "pct_diff": f"{pct_diff:+.1f}%",
-                        "iv": round(iv_val * 100, 1),
-                        "prem": round(prem, 2),
-                        "ann": round(ann_pct, 1),
-                        "is_safe": k_val < market_data[ticker]["support"]
-                    }
-
-            # 2. Calls selection
-            if calls is not None and not calls.empty:
-                best_call = None
-                min_c_diff = float("inf")
-                for _, row in calls.iterrows():
-                    try:
-                        K = float(row['strike'])
-                        iv = float(row['impliedVolatility']) if ('impliedVolatility' in row and not math.isnan(row['impliedVolatility'])) else 0.5
-                        d = calc_call_delta(spot_price, K, T, r, sigma=iv)
-                        diff = abs(d - delta)
-                        if diff < min_c_diff:
-                            min_c_diff = diff
-                            best_call = (row, K, iv)
-                    except Exception:
-                        continue
-
-                if best_call is not None:
-                    row, k_val, iv_val = best_call
-                    bid_val = float(row.get('bid', 0)) if not math.isnan(row.get('bid', 0)) else 0
-                    last_val = float(row.get('lastPrice', 0)) if not math.isnan(row.get('lastPrice', 0)) else 0
-                    prem = bid_val if bid_val > 0 else last_val
-                    yield_pct = (prem / spot_price * 100) if spot_price > 0 else 0
-                    ann_pct = yield_pct * 252 / b_days
-                    pct_diff = ((k_val - spot_price) / spot_price) * 100
-                    results_calls[str(target)][ticker] = {
-                        "raw_exp": closest_exp,
-                        "exp": exp_stacked,
-                        "strike": round(k_val, 2),
-                        "pct_diff": f"{pct_diff:+.1f}%",
-                        "iv": round(iv_val * 100, 1),
-                        "prem": round(prem, 2),
-                        "ann": round(ann_pct, 1),
-                        "is_safe": k_val > market_data[ticker]["resistance"]
-                    }
+        for future in tasks:
+            tgt, t, put_item, call_item = future.result()
+            if put_item:
+                results_puts[str(tgt)][t] = put_item
+            if call_item:
+                results_calls[str(tgt)][t] = call_item
 
     result = {
         "market": market_data,
