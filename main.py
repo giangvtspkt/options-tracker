@@ -134,19 +134,19 @@ HTML_CONTENT = """<!DOCTYPE html>
       </button>
     </div>
 
-    <!-- P/L Metrics Cards -->
+    <!-- Reordered Metric Cards: Total -> Last Month -> This Month -> Unrealized -->
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
       <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
         <div class="text-[10px] font-bold text-slate-500">Total Realized</div>
         <div id="totalRealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
       </div>
       <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
-        <div class="text-[10px] font-bold text-slate-500">This Month Realized</div>
-        <div id="thisMonthRealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
-      </div>
-      <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
         <div class="text-[10px] font-bold text-slate-500">Last Month Realized</div>
         <div id="lastMonthRealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
+      </div>
+      <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
+        <div class="text-[10px] font-bold text-slate-500">This Month Realized</div>
+        <div id="thisMonthRealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
       </div>
       <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
         <div class="text-[10px] font-bold text-slate-500">Unrealized P/L</div>
@@ -285,6 +285,26 @@ HTML_CONTENT = """<!DOCTYPE html>
     let selectedTicker = 'ALL';
     let cloudPositions = [];
 
+    // Distinct palette to color-code identical expiration dates
+    const EXP_COLOR_PALETTE = [
+      'bg-indigo-50/80',
+      'bg-amber-50/80',
+      'bg-emerald-50/80',
+      'bg-purple-50/80',
+      'bg-rose-50/80',
+      'bg-sky-50/80',
+      'bg-teal-50/80'
+    ];
+
+    function getExpColor(expKey, map) {
+      if (!expKey) return 'hover:bg-slate-50';
+      if (!map[expKey]) {
+        const idx = Object.keys(map).length % EXP_COLOR_PALETTE.length;
+        map[expKey] = EXP_COLOR_PALETTE[idx];
+      }
+      return map[expKey];
+    }
+
     function toggleAddForm() {
       document.getElementById('positionForm').classList.toggle('hidden');
     }
@@ -337,9 +357,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       const tbody = document.getElementById('positionsBody');
       const now = new Date();
       const currentYear = now.getFullYear();
-      const currentMonth = now.getMonth(); // 0-indexed
+      const currentMonth = now.getMonth();
 
-      // Last month calculation
       let lastMonthYear = currentYear;
       let lastMonth = currentMonth - 1;
       if (lastMonth < 0) {
@@ -347,36 +366,33 @@ HTML_CONTENT = """<!DOCTYPE html>
         lastMonthYear--;
       }
 
-      // Auto delete/filter out any position older than the current month
       const filteredPositions = [];
-      const expiredToPrune = [];
+      let pruneNeeded = false;
 
       cloudPositions.forEach(p => {
-        const expDate = new Date(p.exp + 'T00:00:00');
-        const pYear = expDate.getFullYear();
-        const pMonth = expDate.getMonth();
+        const parts = p.exp.split('-');
+        const pYear = parseInt(parts[0], 10);
+        const pMonth = parseInt(parts[1], 10) - 1;
 
-        // Expired before this month -> flag to prune
         if (pYear < currentYear || (pYear === currentYear && pMonth < currentMonth)) {
-          expiredToPrune.push(p.id);
+          pruneNeeded = true;
         } else {
           filteredPositions.push(p);
         }
       });
 
-      // Synchronize pruning to backend if any old month positions exist
-      if (expiredToPrune.length > 0) {
+      if (pruneNeeded) {
         fetch('/api/positions/prune-old', { credentials: 'omit' }).catch(() => {});
       }
 
-      // Auto sort by Exp (Old/Earliest on top, New/Latest at bottom)
+      // Sort by Exp (earliest dates on top, latest at bottom)
       filteredPositions.sort((a, b) => new Date(a.exp) - new Date(b.exp));
 
       if (filteredPositions.length === 0) {
         tbody.innerHTML = '<tr><td colspan="7" class="p-2 text-center text-slate-400">No active positions for this month.</td></tr>';
         document.getElementById('totalRealized').innerText = "$0.00";
-        document.getElementById('thisMonthRealized').innerText = "$0.00";
         document.getElementById('lastMonthRealized').innerText = "$0.00";
+        document.getElementById('thisMonthRealized').innerText = "$0.00";
         document.getElementById('unrealizedPL').innerText = "$0.00";
         return;
       }
@@ -389,11 +405,13 @@ HTML_CONTENT = """<!DOCTYPE html>
       let lastMonthRealized = 0;
       let totalUnrealized = 0;
 
+      const posColorMap = {};
+
       filteredPositions.forEach(p => {
-        const expDate = new Date(p.exp + 'T00:00:00');
+        const parts = p.exp.split('-');
+        const pYear = parseInt(parts[0], 10);
+        const pMonth = parseInt(parts[1], 10) - 1;
         const isExpired = p.exp < todayStr;
-        const pYear = expDate.getFullYear();
-        const pMonth = expDate.getMonth();
 
         const spot = (globalData && globalData.market && globalData.market[p.ticker]) 
           ? globalData.market[p.ticker].spot 
@@ -425,7 +443,6 @@ HTML_CONTENT = """<!DOCTYPE html>
             lastMonthRealized += pl;
           }
         } else {
-          // Open position
           if (p.action === 'SELL') {
             pl = p.prem * 100 * p.qty;
           } else {
@@ -443,8 +460,10 @@ HTML_CONTENT = """<!DOCTYPE html>
           ? '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">SELL</span>'
           : '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">BUY</span>';
 
+        const rowBg = getExpColor(p.exp, posColorMap);
+
         const tr = document.createElement('tr');
-        tr.className = 'border-b hover:bg-slate-50';
+        tr.className = `border-b ${rowBg}`;
         tr.innerHTML = `
           <td class="p-1.5 border-r whitespace-nowrap">${actionBadge}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-bold">${p.ticker} $${p.strike} ${p.type} (x${p.qty})</td>
@@ -459,7 +478,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         tbody.appendChild(tr);
       });
 
-      // Update Summary Values
       const fmt = (val) => `${val >= 0 ? '+$' : '-$'}${Math.abs(val).toFixed(2)}`;
       const cls = (val) => `text-xs font-extrabold font-mono ${val >= 0 ? 'text-emerald-700' : 'text-rose-700'}`;
 
@@ -467,13 +485,13 @@ HTML_CONTENT = """<!DOCTYPE html>
       totEl.innerText = fmt(totalRealized);
       totEl.className = cls(totalRealized);
 
-      const thisEl = document.getElementById('thisMonthRealized');
-      thisEl.innerText = fmt(thisMonthRealized);
-      thisEl.className = cls(thisMonthRealized);
-
       const lastEl = document.getElementById('lastMonthRealized');
       lastEl.innerText = fmt(lastMonthRealized);
       lastEl.className = cls(lastMonthRealized);
+
+      const thisEl = document.getElementById('thisMonthRealized');
+      thisEl.innerText = fmt(thisMonthRealized);
+      thisEl.className = cls(thisMonthRealized);
 
       const unEl = document.getElementById('unrealizedPL');
       unEl.innerText = fmt(totalUnrealized);
@@ -589,16 +607,27 @@ HTML_CONTENT = """<!DOCTYPE html>
       headHtml += `</tr>`;
       tbody.innerHTML += headHtml;
 
-      targets.forEach(tgt => {
-        const isSweetSpot = (tgt === 30 || tgt === 45);
-        let rowClass = isSweetSpot ? 'bg-emerald-50/70 font-semibold' : 'hover:bg-slate-50';
-        let badge = isSweetSpot ? '★ ' : '';
+      const tableColorMap = {};
 
-        let rowHtml = `<tr class="border-b ${rowClass}"><td class="p-2 border-r-2 border-r-slate-400 whitespace-nowrap font-bold text-slate-700 bg-slate-50">${badge}${tgt}d</td>`;
+      targets.forEach(tgt => {
         const targetKey = String(tgt);
+        const targetDict = results[tgt] || results[targetKey] || {};
+
+        // Derive an expiration date string from the row to color matching dates together
+        let rowExpKey = '';
+        for (const t of tickers) {
+          if (targetDict[t] && targetDict[t].raw_exp) {
+            rowExpKey = targetDict[t].raw_exp;
+            break;
+          }
+        }
+
+        const rowBg = getExpColor(rowExpKey, tableColorMap);
+        const badge = (tgt === 30 || tgt === 45) ? '★ ' : '';
+
+        let rowHtml = `<tr class="border-b ${rowBg}"><td class="p-2 border-r-2 border-r-slate-400 whitespace-nowrap font-bold text-slate-700">${badge}${tgt}d</td>`;
 
         tickers.forEach(t => {
-          const targetDict = results[tgt] || results[targetKey] || {};
           const item = targetDict[t];
           if (item) {
             const strikeBg = item.is_safe ? 'bg-green-200 text-green-900 font-bold' : '';
@@ -651,7 +680,6 @@ def remove_position(pos_id: int):
 
 @app.get("/api/positions/prune-old")
 def prune_old_positions():
-    """Auto-deletes positions whose expiration month is earlier than the current month."""
     positions, _ = get_positions_from_github()
     now = datetime.date.today()
     current_year = now.year
@@ -661,8 +689,10 @@ def prune_old_positions():
     changed = False
     for p in positions:
         try:
-            exp_date = datetime.datetime.strptime(p["exp"], "%Y-%m-%d").date()
-            if exp_date.year < current_year or (exp_date.year == current_year and exp_date.month < current_month):
+            parts = p["exp"].split('-')
+            p_year = int(parts[0])
+            p_month = int(parts[1])
+            if p_year < current_year or (p_year == current_year and p_month < current_month):
                 changed = True
                 continue
             kept.append(p)
@@ -678,7 +708,6 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
     cache_key = f"{tickers}_{delta}"
     now = time.time()
     
-    # 60s Fast Response Cache
     if cache_key in DATA_CACHE and (now - DATA_CACHE[cache_key]["time"]) < CACHE_TTL:
         return DATA_CACHE[cache_key]["data"]
 
@@ -687,8 +716,8 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
     today = datetime.date.today()
     
     market_data = {}
-    results_puts = {t: {} for t in target_periods}
-    results_calls = {t: {} for t in target_periods}
+    results_puts = {str(t): {} for t in target_periods}
+    results_calls = {str(t): {} for t in target_periods}
 
     for ticker in ticker_list:
         try:
@@ -749,10 +778,9 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
             if not closest_exp:
                 continue
 
-            exp_date = datetime.datetime.strptime(closest_exp, "%Y-%m-%d").date()
-            b_days = count_business_days(today, exp_date)
-
             try:
+                exp_date = datetime.datetime.strptime(closest_exp, "%Y-%m-%d").date()
+                b_days = count_business_days(today, exp_date)
                 chain = tkr.option_chain(closest_exp)
                 puts, calls = chain.puts, chain.calls
             except Exception:
@@ -764,59 +792,71 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
             exp_short = exp_date.strftime("%b %d")
             exp_stacked = f"{exp_short}<br><span class='text-[9px] text-slate-400 font-mono'>({b_days}d)</span>"
 
-            # Puts
-            if not puts.empty:
+            # 1. Puts selection
+            if puts is not None and not puts.empty:
                 best_put = None
                 min_p_diff = float("inf")
                 for _, row in puts.iterrows():
-                    K = float(row['strike'])
-                    iv = float(row.get('impliedVolatility', 0.5))
-                    d = calc_put_delta(spot_price, K, T, r, sigma=iv)
-                    diff = abs(d - (-delta))
-                    if diff < min_p_diff:
-                        min_p_diff = diff
-                        best_put = row
+                    try:
+                        K = float(row['strike'])
+                        iv = float(row['impliedVolatility']) if ('impliedVolatility' in row and not math.isnan(row['impliedVolatility'])) else 0.5
+                        d = calc_put_delta(spot_price, K, T, r, sigma=iv)
+                        diff = abs(d - (-delta))
+                        if diff < min_p_diff:
+                            min_p_diff = diff
+                            best_put = (row, K, iv)
+                    except Exception:
+                        continue
 
                 if best_put is not None:
-                    prem = float(best_put['bid']) if float(best_put.get('bid', 0)) > 0 else float(best_put.get('lastPrice', 0))
-                    k_val = float(best_put['strike'])
+                    row, k_val, iv_val = best_put
+                    bid_val = float(row.get('bid', 0)) if not math.isnan(row.get('bid', 0)) else 0
+                    last_val = float(row.get('lastPrice', 0)) if not math.isnan(row.get('lastPrice', 0)) else 0
+                    prem = bid_val if bid_val > 0 else last_val
                     yield_pct = (prem / k_val * 100) if k_val > 0 else 0
                     ann_pct = yield_pct * 252 / b_days
                     pct_diff = ((k_val - spot_price) / spot_price) * 100
-                    results_puts[target][ticker] = {
+                    results_puts[str(target)][ticker] = {
+                        "raw_exp": closest_exp,
                         "exp": exp_stacked,
                         "strike": round(k_val, 2),
                         "pct_diff": f"{pct_diff:+.1f}%",
-                        "iv": round(float(best_put.get('impliedVolatility', 0)) * 100, 1),
+                        "iv": round(iv_val * 100, 1),
                         "prem": round(prem, 2),
                         "ann": round(ann_pct, 1),
                         "is_safe": k_val < market_data[ticker]["support"]
                     }
 
-            # Calls
-            if not calls.empty:
+            # 2. Calls selection
+            if calls is not None and not calls.empty:
                 best_call = None
                 min_c_diff = float("inf")
                 for _, row in calls.iterrows():
-                    K = float(row['strike'])
-                    iv = float(row.get('impliedVolatility', 0.5))
-                    d = calc_call_delta(spot_price, K, T, r, sigma=iv)
-                    diff = abs(d - delta)
-                    if diff < min_c_diff:
-                        min_c_diff = diff
-                        best_call = row
+                    try:
+                        K = float(row['strike'])
+                        iv = float(row['impliedVolatility']) if ('impliedVolatility' in row and not math.isnan(row['impliedVolatility'])) else 0.5
+                        d = calc_call_delta(spot_price, K, T, r, sigma=iv)
+                        diff = abs(d - delta)
+                        if diff < min_c_diff:
+                            min_c_diff = diff
+                            best_call = (row, K, iv)
+                    except Exception:
+                        continue
 
                 if best_call is not None:
-                    prem = float(best_call['bid']) if float(best_call.get('bid', 0)) > 0 else float(best_call.get('lastPrice', 0))
-                    k_val = float(best_call['strike'])
+                    row, k_val, iv_val = best_call
+                    bid_val = float(row.get('bid', 0)) if not math.isnan(row.get('bid', 0)) else 0
+                    last_val = float(row.get('lastPrice', 0)) if not math.isnan(row.get('lastPrice', 0)) else 0
+                    prem = bid_val if bid_val > 0 else last_val
                     yield_pct = (prem / spot_price * 100) if spot_price > 0 else 0
                     ann_pct = yield_pct * 252 / b_days
                     pct_diff = ((k_val - spot_price) / spot_price) * 100
-                    results_calls[target][ticker] = {
+                    results_calls[str(target)][ticker] = {
+                        "raw_exp": closest_exp,
                         "exp": exp_stacked,
                         "strike": round(k_val, 2),
                         "pct_diff": f"{pct_diff:+.1f}%",
-                        "iv": round(float(best_call.get('impliedVolatility', 0)) * 100, 1),
+                        "iv": round(iv_val * 100, 1),
                         "prem": round(prem, 2),
                         "ann": round(ann_pct, 1),
                         "is_safe": k_val > market_data[ticker]["resistance"]
