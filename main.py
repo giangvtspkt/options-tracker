@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import yfinance as yf
 import math
 import datetime
+import time
 import os
 import json
 import base64
@@ -14,6 +15,10 @@ app = FastAPI()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
+
+# In-memory fast cache
+DATA_CACHE = {}
+CACHE_TTL = 60
 
 def norm_cdf(x):
     return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
@@ -96,7 +101,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Options Tracker</title>
+  <title>Options Yield & Performance Tracker</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-100 text-slate-800 p-2.5 sm:p-4 font-sans text-xs">
@@ -120,28 +125,32 @@ HTML_CONTENT = """<!DOCTYPE html>
 
   <!-- Positions & P/L Summary Box -->
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
-    <div class="flex items-center justify-between mb-2.5">
+    <div class="flex items-center justify-between mb-2">
       <h2 class="text-xs font-bold text-slate-800 flex items-center gap-1">
-        <span>💼</span> Portfolio Performance &amp; Positions
+        <span>💼</span> Performance &amp; Positions (This Month Only)
       </h2>
       <button onclick="toggleAddForm()" id="toggleFormBtn" class="bg-slate-800 text-white text-[10px] font-bold px-2.5 py-1 rounded-md">
         + Add Position
       </button>
     </div>
 
-    <!-- P/L Summary Metric Cards -->
-    <div class="grid grid-cols-3 gap-2 mb-3">
+    <!-- P/L Metrics Cards -->
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
       <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
-        <div class="text-[10px] font-bold text-slate-500">Realized P/L</div>
-        <div id="realizedPL" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
+        <div class="text-[10px] font-bold text-slate-500">Total Realized</div>
+        <div id="totalRealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
+      </div>
+      <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
+        <div class="text-[10px] font-bold text-slate-500">This Month Realized</div>
+        <div id="thisMonthRealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
+      </div>
+      <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
+        <div class="text-[10px] font-bold text-slate-500">Last Month Realized</div>
+        <div id="lastMonthRealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
       </div>
       <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
         <div class="text-[10px] font-bold text-slate-500">Unrealized P/L</div>
         <div id="unrealizedPL" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
-      </div>
-      <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
-        <div class="text-[10px] font-bold text-slate-500">Win Rate</div>
-        <div id="winRate" class="text-xs font-extrabold font-mono text-slate-700">0%</div>
       </div>
     </div>
 
@@ -201,11 +210,11 @@ HTML_CONTENT = """<!DOCTYPE html>
           <tr>
             <th class="p-1.5 border-r">Pos</th>
             <th class="p-1.5 border-r">Contract</th>
-            <th class="p-1.5 border-r">Exp</th>
+            <th class="p-1.5 border-r">Exp ▲</th>
             <th class="p-1.5 border-r">Prem</th>
             <th class="p-1.5 border-r">P/L ($)</th>
             <th class="p-1.5 border-r">Status</th>
-            <th class="p-1.5 text-center">Action</th>
+            <th class="p-1.5 text-center">Delete</th>
           </tr>
         </thead>
         <tbody id="positionsBody">
@@ -314,7 +323,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         toggleAddForm();
         loadCloudPositions();
       } else {
-        alert('Could not save to GitHub. Check environment variables.');
+        alert('Could not save position.');
       }
     }
 
@@ -326,24 +335,66 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     function renderPositionsAndPL() {
       const tbody = document.getElementById('positionsBody');
-      if (!cloudPositions || cloudPositions.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="p-2 text-center text-slate-400">No active positions.</td></tr>';
-        document.getElementById('realizedPL').innerText = "$0.00";
+      const now = new Date();
+      const currentYear = now.getFullYear();
+      const currentMonth = now.getMonth(); // 0-indexed
+
+      // Last month calculation
+      let lastMonthYear = currentYear;
+      let lastMonth = currentMonth - 1;
+      if (lastMonth < 0) {
+        lastMonth = 11;
+        lastMonthYear--;
+      }
+
+      // Auto delete/filter out any position older than the current month
+      const filteredPositions = [];
+      const expiredToPrune = [];
+
+      cloudPositions.forEach(p => {
+        const expDate = new Date(p.exp + 'T00:00:00');
+        const pYear = expDate.getFullYear();
+        const pMonth = expDate.getMonth();
+
+        // Expired before this month -> flag to prune
+        if (pYear < currentYear || (pYear === currentYear && pMonth < currentMonth)) {
+          expiredToPrune.push(p.id);
+        } else {
+          filteredPositions.push(p);
+        }
+      });
+
+      // Synchronize pruning to backend if any old month positions exist
+      if (expiredToPrune.length > 0) {
+        fetch('/api/positions/prune-old', { credentials: 'omit' }).catch(() => {});
+      }
+
+      // Auto sort by Exp (Old/Earliest on top, New/Latest at bottom)
+      filteredPositions.sort((a, b) => new Date(a.exp) - new Date(b.exp));
+
+      if (filteredPositions.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="p-2 text-center text-slate-400">No active positions for this month.</td></tr>';
+        document.getElementById('totalRealized').innerText = "$0.00";
+        document.getElementById('thisMonthRealized').innerText = "$0.00";
+        document.getElementById('lastMonthRealized').innerText = "$0.00";
         document.getElementById('unrealizedPL').innerText = "$0.00";
-        document.getElementById('winRate').innerText = "0%";
         return;
       }
 
       tbody.innerHTML = '';
-      const todayStr = new Date().toISOString().split('T')[0];
+      const todayStr = now.toISOString().split('T')[0];
 
       let totalRealized = 0;
+      let thisMonthRealized = 0;
+      let lastMonthRealized = 0;
       let totalUnrealized = 0;
-      let closedWins = 0;
-      let closedTotal = 0;
 
-      cloudPositions.forEach(p => {
+      filteredPositions.forEach(p => {
+        const expDate = new Date(p.exp + 'T00:00:00');
         const isExpired = p.exp < todayStr;
+        const pYear = expDate.getFullYear();
+        const pMonth = expDate.getMonth();
+
         const spot = (globalData && globalData.market && globalData.market[p.ticker]) 
           ? globalData.market[p.ticker].spot 
           : null;
@@ -351,39 +402,36 @@ HTML_CONTENT = """<!DOCTYPE html>
         let pl = 0;
         let statusHtml = '';
 
-        // Auto Execution / Settlement Logic
         if (isExpired) {
-          closedTotal++;
           if (p.action === 'SELL') {
-            // Option Seller logic: Max profit is 100% of premium collected if expires OTM
             if ((p.type === 'PUT' && (!spot || spot >= p.strike)) || (p.type === 'CALL' && (!spot || spot <= p.strike))) {
-              pl = p.prem * 100 * p.qty; // Full profit kept
-              closedWins++;
+              pl = p.prem * 100 * p.qty;
               statusHtml = '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">Expired (Win)</span>';
             } else {
-              // Assigned with loss
               const intrinsic = p.type === 'PUT' ? Math.max(p.strike - spot, 0) : Math.max(spot - p.strike, 0);
               pl = (p.prem - intrinsic) * 100 * p.qty;
-              if (pl >= 0) closedWins++;
               statusHtml = '<span class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">Assigned</span>';
             }
           } else {
-            // Buyer logic
             const intrinsic = p.type === 'CALL' ? Math.max((spot || 0) - p.strike, 0) : Math.max(p.strike - (spot || 0), 0);
             pl = (intrinsic - p.prem) * 100 * p.qty;
-            if (pl > 0) closedWins++;
             statusHtml = '<span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-bold">Closed</span>';
           }
+
           totalRealized += pl;
+          if (pYear === currentYear && pMonth === currentMonth) {
+            thisMonthRealized += pl;
+          } else if (pYear === lastMonthYear && pMonth === lastMonth) {
+            lastMonthRealized += pl;
+          }
         } else {
-          // Open active contract
+          // Open position
           if (p.action === 'SELL') {
-            pl = p.prem * 100 * p.qty; // Captured premium buffer
-            statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
+            pl = p.prem * 100 * p.qty;
           } else {
             pl = 0;
-            statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
           }
+          statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
           totalUnrealized += pl;
         }
 
@@ -400,7 +448,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         tr.innerHTML = `
           <td class="p-1.5 border-r whitespace-nowrap">${actionBadge}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-bold">${p.ticker} $${p.strike} ${p.type} (x${p.qty})</td>
-          <td class="p-1.5 border-r whitespace-nowrap text-slate-600 font-mono">${p.exp}</td>
+          <td class="p-1.5 border-r whitespace-nowrap text-slate-700 font-mono font-bold">${p.exp}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono font-bold ${plColor}">${plDisplay}</td>
           <td class="p-1.5 border-r whitespace-nowrap">${statusHtml}</td>
@@ -411,17 +459,25 @@ HTML_CONTENT = """<!DOCTYPE html>
         tbody.appendChild(tr);
       });
 
-      // Update Top Summary Cards
-      const realEl = document.getElementById('realizedPL');
-      realEl.innerText = `${totalRealized >= 0 ? '+$' : '-$'}${Math.abs(totalRealized).toFixed(2)}`;
-      realEl.className = `text-xs font-extrabold font-mono ${totalRealized >= 0 ? 'text-emerald-700' : 'text-rose-700'}`;
+      // Update Summary Values
+      const fmt = (val) => `${val >= 0 ? '+$' : '-$'}${Math.abs(val).toFixed(2)}`;
+      const cls = (val) => `text-xs font-extrabold font-mono ${val >= 0 ? 'text-emerald-700' : 'text-rose-700'}`;
 
-      const unrealEl = document.getElementById('unrealizedPL');
-      unrealEl.innerText = `${totalUnrealized >= 0 ? '+$' : '-$'}${Math.abs(totalUnrealized).toFixed(2)}`;
-      unrealEl.className = `text-xs font-extrabold font-mono ${totalUnrealized >= 0 ? 'text-emerald-700' : 'text-rose-700'}`;
+      const totEl = document.getElementById('totalRealized');
+      totEl.innerText = fmt(totalRealized);
+      totEl.className = cls(totalRealized);
 
-      const winRate = closedTotal > 0 ? Math.round((closedWins / closedTotal) * 100) : 100;
-      document.getElementById('winRate').innerText = `${winRate}% (${closedWins}/${closedTotal})`;
+      const thisEl = document.getElementById('thisMonthRealized');
+      thisEl.innerText = fmt(thisMonthRealized);
+      thisEl.className = cls(thisMonthRealized);
+
+      const lastEl = document.getElementById('lastMonthRealized');
+      lastEl.innerText = fmt(lastMonthRealized);
+      lastEl.className = cls(lastMonthRealized);
+
+      const unEl = document.getElementById('unrealizedPL');
+      unEl.innerText = fmt(totalUnrealized);
+      unEl.className = cls(totalUnrealized);
     }
 
     async function fetchData() {
@@ -446,7 +502,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         status.innerText = "Updated: " + new Date().toLocaleTimeString();
       } catch (err) {
         console.error("Fetch failed:", err);
-        status.innerText = "Error loading data. Retrying...";
+        status.innerText = "Error loading data.";
       } finally {
         btn.disabled = false;
       }
@@ -593,8 +649,39 @@ def remove_position(pos_id: int):
         raise HTTPException(status_code=500, detail="Failed to delete from GitHub")
     return {"status": "success"}
 
+@app.get("/api/positions/prune-old")
+def prune_old_positions():
+    """Auto-deletes positions whose expiration month is earlier than the current month."""
+    positions, _ = get_positions_from_github()
+    now = datetime.date.today()
+    current_year = now.year
+    current_month = now.month
+
+    kept = []
+    changed = False
+    for p in positions:
+        try:
+            exp_date = datetime.datetime.strptime(p["exp"], "%Y-%m-%d").date()
+            if exp_date.year < current_year or (exp_date.year == current_year and exp_date.month < current_month):
+                changed = True
+                continue
+            kept.append(p)
+        except Exception:
+            kept.append(p)
+
+    if changed:
+        save_positions_to_github(kept)
+    return {"status": "pruned", "remaining": len(kept)}
+
 @app.get("/api/data")
 def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
+    cache_key = f"{tickers}_{delta}"
+    now = time.time()
+    
+    # 60s Fast Response Cache
+    if cache_key in DATA_CACHE and (now - DATA_CACHE[cache_key]["time"]) < CACHE_TTL:
+        return DATA_CACHE[cache_key]["data"]
+
     ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
     target_periods = [7, 14, 30, 45, 60, 90]
     today = datetime.date.today()
@@ -643,7 +730,6 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
             "resistance": round(max(r1, rolling_resistance), 2)
         }
 
-        # Select closest real expiration date for each target window
         for target in target_periods:
             closest_exp = None
             min_diff = float("inf")
@@ -678,7 +764,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
             exp_short = exp_date.strftime("%b %d")
             exp_stacked = f"{exp_short}<br><span class='text-[9px] text-slate-400 font-mono'>({b_days}d)</span>"
 
-            # 1. Puts selection
+            # Puts
             if not puts.empty:
                 best_put = None
                 min_p_diff = float("inf")
@@ -707,7 +793,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
                         "is_safe": k_val < market_data[ticker]["support"]
                     }
 
-            # 2. Calls selection
+            # Calls
             if not calls.empty:
                 best_call = None
                 min_c_diff = float("inf")
@@ -736,13 +822,15 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
                         "is_safe": k_val > market_data[ticker]["resistance"]
                     }
 
-    return {
+    result = {
         "market": market_data,
         "puts": results_puts,
         "calls": results_calls,
         "tickers": list(market_data.keys()),
         "targets": target_periods
     }
+    DATA_CACHE[cache_key] = {"time": now, "data": result}
+    return result
 
 @app.get("/", response_class=HTMLResponse)
 def render_index():
