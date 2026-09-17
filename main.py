@@ -629,7 +629,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         }
 
         const rowBg = getExpColor(rowExpKey, tableColorMap);
-        const badge = (tgt === 30 || tgt === 45) ? '★ ' : '';
+        const badge = (tgt === 21 || tgt === 30) ? '★ ' : '';
 
         let rowHtml = `<tr class="border-b ${rowBg}"><td class="p-2 border-r-2 border-r-slate-400 whitespace-nowrap font-bold text-slate-700">${badge}${tgt}d</td>`;
 
@@ -653,7 +653,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       });
     }
 
-    // Immediate local position loading (0ms)
     loadCloudPositions();
     fetchData();
     setInterval(fetchData, 60000);
@@ -694,7 +693,8 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
         return DATA_CACHE[cache_key]["data"]
 
     ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
-    target_periods = [7, 14, 30, 45, 60, 90]
+    # Replaced 45 with 21 days: [7, 14, 21, 30]
+    target_periods = [7, 14, 21, 30]
     today = datetime.date.today()
     
     market_data = {}
@@ -848,7 +848,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
                         "exp": exp_stacked,
                         "strike": round(k_val, 2),
                         "pct_diff": f"{pct_diff:+.1f}%",
-                        "iv": round(iv_val * 100, 1),
+                        "iv": round(float(best_call.get('impliedVolatility', 0)) * 100, 1),
                         "prem": round(prem, 2),
                         "ann": round(ann_pct, 1),
                         "is_safe": k_val > market_data[ticker]["resistance"]
