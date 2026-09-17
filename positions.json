@@ -8,5 +8,15 @@
     "prem": 0.62,
     "qty": 1,
     "exp": "2026-09-11"
+  },
+  {
+    "id": 1789640124994,
+    "action": "SELL",
+    "type": "PUT",
+    "ticker": "IREN",
+    "strike": 38.5,
+    "prem": 0.3,
+    "qty": 2,
+    "exp": "2026-09-18"
   }
 ]
