@@ -1,7 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-import yfinance as yf
 import math
 import datetime
 import time
@@ -128,6 +127,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     <div id="status" class="text-[11px] text-slate-500 mt-1.5 text-right font-medium">Ready</div>
   </div>
 
+  <!-- Performance & Positions -->
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
     <div class="flex items-center justify-between mb-2">
       <h2 class="text-xs font-bold text-slate-800 flex items-center gap-1">
@@ -229,10 +229,11 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Spot & Manual Key Levels Box -->
   <div class="mb-3">
     <h2 class="text-xs font-bold text-blue-950 bg-blue-100/80 p-2.5 rounded-t-lg border-t border-x border-blue-200 flex items-center justify-between">
-      <span>📊 Spot &amp; Key Technical Levels</span>
-      <span class="text-[10px] font-normal text-blue-800">Support (Floor) | Resistance (Ceiling)</span>
+      <span>📊 Spot &amp; Manual Key Levels</span>
+      <span class="text-[10px] font-normal text-blue-800">Custom Floor &amp; Ceiling Inputs</span>
     </h2>
     <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
       <table class="w-full text-left" id="levelsTable">
@@ -240,16 +241,12 @@ HTML_CONTENT = """<!DOCTYPE html>
           <tr>
             <th class="p-2 border-r font-bold">Ticker</th>
             <th class="p-2 border-r font-bold">Spot Price</th>
-            <th class="p-2 border-r font-bold text-emerald-800 bg-emerald-50/50">Support Floor</th>
-            <th class="p-2 border-r font-medium text-slate-600">S1 Pivot</th>
-            <th class="p-2 border-r font-medium text-slate-600">30d Low</th>
-            <th class="p-2 border-r font-bold text-rose-800 bg-rose-50/50">Resistance Ceiling</th>
-            <th class="p-2 border-r font-medium text-slate-600">R1 Pivot</th>
-            <th class="p-2 font-medium text-slate-600">30d High</th>
+            <th class="p-2 border-r font-bold text-emerald-800 bg-emerald-50/50">Support Floor ($)</th>
+            <th class="p-2 font-bold text-rose-800 bg-rose-50/50">Resistance Ceiling ($)</th>
           </tr>
         </thead>
         <tbody id="levelsBody">
-          <tr><td colspan="8" class="p-3 text-center text-slate-400">Loading market levels...</td></tr>
+          <tr><td colspan="4" class="p-3 text-center text-slate-400">Loading market levels...</td></tr>
         </tbody>
       </table>
     </div>
@@ -262,7 +259,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
   <div class="mb-4">
     <h2 class="text-xs font-bold text-sky-900 bg-sky-100 p-2.5 rounded-t-lg border-t border-x border-sky-200">
-      📉 Cash-Secured Puts (Green = Strike &lt; Support/Floor)
+      📉 Cash-Secured Puts (Green = Strike &lt; Manual Support)
     </h2>
     <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
       <table class="w-full text-left" id="putsTable">
@@ -275,7 +272,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
   <div class="mb-6">
     <h2 class="text-xs font-bold text-amber-900 bg-amber-100 p-2.5 rounded-t-lg border-t border-x border-amber-200">
-      📈 Covered Calls (Green = Strike &gt; Resistance/Ceiling)
+      📈 Covered Calls (Green = Strike &gt; Manual Resistance)
     </h2>
     <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
       <table class="w-full text-left" id="callsTable">
@@ -290,6 +287,19 @@ HTML_CONTENT = """<!DOCTYPE html>
     let globalData = null;
     let selectedTicker = 'ALL';
     let cloudPositions = [];
+
+    // Local manual levels storage
+    function getManualLevels() {
+      return JSON.parse(localStorage.getItem('manual_key_levels') || '{}');
+    }
+
+    function updateManualLevel(ticker, key, value) {
+      const levels = getManualLevels();
+      if (!levels[ticker]) levels[ticker] = {};
+      levels[ticker][key] = parseFloat(value) || 0;
+      localStorage.setItem('manual_key_levels', JSON.stringify(levels));
+      renderBothTables();
+    }
 
     const EXP_COLOR_PALETTE = [
       'bg-indigo-50/80',
@@ -556,21 +566,40 @@ HTML_CONTENT = """<!DOCTYPE html>
       tbody.innerHTML = '';
       const entries = Object.entries(market || {});
       if (entries.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" class="p-3 text-center text-slate-400">No ticker data available.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="4" class="p-3 text-center text-slate-400">No ticker data available.</td></tr>`;
         return;
       }
+      const manualLevels = getManualLevels();
+
       entries.forEach(([ticker, m]) => {
+        const currentSupp = (manualLevels[ticker] && manualLevels[ticker].support !== undefined) 
+          ? manualLevels[ticker].support 
+          : (m.spot * 0.95).toFixed(2);
+        const currentRes = (manualLevels[ticker] && manualLevels[ticker].resistance !== undefined) 
+          ? manualLevels[ticker].resistance 
+          : (m.spot * 1.05).toFixed(2);
+
+        // Save defaults if not already present
+        if (!manualLevels[ticker]) {
+          manualLevels[ticker] = { support: parseFloat(currentSupp), resistance: parseFloat(currentRes) };
+          localStorage.setItem('manual_key_levels', JSON.stringify(manualLevels));
+        }
+
         const tr = document.createElement('tr');
         tr.className = "border-b hover:bg-slate-50 text-[11px]";
         tr.innerHTML = `
           <td class="p-2 border-r font-bold text-slate-800 bg-slate-50">${ticker}</td>
           <td class="p-2 border-r font-bold text-blue-700 font-mono">$${m.spot}</td>
-          <td class="p-2 border-r font-bold text-emerald-800 bg-emerald-50/70 font-mono">$${m.support}</td>
-          <td class="p-2 border-r text-slate-600 font-mono">$${m.s1}</td>
-          <td class="p-2 border-r text-slate-600 font-mono">$${m.floor}</td>
-          <td class="p-2 border-r font-bold text-rose-800 bg-rose-50/70 font-mono">$${m.resistance}</td>
-          <td class="p-2 border-r text-slate-600 font-mono">$${m.r1}</td>
-          <td class="p-2 text-slate-600 font-mono">$${m.ceiling}</td>
+          <td class="p-2 border-r bg-emerald-50/50">
+            <input type="number" step="0.1" value="${currentSupp}" 
+              onchange="updateManualLevel('${ticker}', 'support', this.value)"
+              class="w-24 p-1 border rounded font-mono font-bold text-emerald-800 bg-white">
+          </td>
+          <td class="p-2 bg-rose-50/50">
+            <input type="number" step="0.1" value="${currentRes}" 
+              onchange="updateManualLevel('${ticker}', 'resistance', this.value)"
+              class="w-24 p-1 border rounded font-mono font-bold text-rose-800 bg-white">
+          </td>
         `;
         tbody.appendChild(tr);
       });
@@ -579,11 +608,11 @@ HTML_CONTENT = """<!DOCTYPE html>
     function renderBothTables() {
       if (!globalData) return;
       const displayTickers = selectedTicker === 'ALL' ? globalData.tickers : [selectedTicker];
-      renderTable('putsBody', globalData.puts, displayTickers, globalData.targets);
-      renderTable('callsBody', globalData.calls, displayTickers, globalData.targets);
+      renderTable('putsBody', globalData.puts, displayTickers, globalData.targets, 'PUT');
+      renderTable('callsBody', globalData.calls, displayTickers, globalData.targets, 'CALL');
     }
 
-    function renderTable(elementId, results, tickers, targets) {
+    function renderTable(elementId, results, tickers, targets, optType) {
       const tbody = document.getElementById(elementId);
       tbody.innerHTML = '';
 
@@ -615,6 +644,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       tbody.innerHTML += headHtml;
 
       const tableColorMap = {};
+      const manualLevels = getManualLevels();
 
       targets.forEach(tgt => {
         const targetKey = String(tgt);
@@ -636,7 +666,17 @@ HTML_CONTENT = """<!DOCTYPE html>
         tickers.forEach(t => {
           const item = targetDict[t];
           if (item) {
-            const strikeBg = item.is_safe ? 'bg-green-200 text-green-900 font-bold' : '';
+            // Check safe zone against manual inputs
+            let isSafe = false;
+            if (manualLevels[t]) {
+              if (optType === 'PUT' && manualLevels[t].support !== undefined) {
+                isSafe = item.strike < manualLevels[t].support;
+              } else if (optType === 'CALL' && manualLevels[t].resistance !== undefined) {
+                isSafe = item.strike > manualLevels[t].resistance;
+              }
+            }
+
+            const strikeBg = isSafe ? 'bg-green-200 text-green-900 font-bold' : '';
             rowHtml += `
               <td class="p-1 border-r text-center leading-tight text-[10px] text-slate-700">${item.exp}</td>
               <td class="p-1.5 border-r whitespace-nowrap ${strikeBg}">$${item.strike} <span class="text-[9px]">(${item.pct_diff})</span></td>
@@ -702,13 +742,9 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
 
     for ticker in ticker_list:
         try:
-            # 1. Fetch S1/R1 tech levels via yfinance
-            tkr = yf.Ticker(ticker, session=YF_SESSION)
-            df_hist = tkr.history(period="30d")
-            
-            # 2. Fetch Native Options Data without Pandas
+            # Fast native query without historical Pandas loading
             base_url = f"https://query2.finance.yahoo.com/v7/finance/options/{ticker}"
-            res = requests.get(base_url, headers=YF_SESSION.headers, timeout=5).json()
+            res = requests.get(base_url, headers=YF_SESSION.headers, timeout=4).json()
             
             result_data = res.get("optionChain", {}).get("result", [])
             if not result_data: 
@@ -723,27 +759,8 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
         except Exception:
             continue
 
-        if not df_hist.empty and len(df_hist) >= 2:
-            prev_high = float(df_hist['High'].iloc[-2])
-            prev_low = float(df_hist['Low'].iloc[-2])
-            prev_close = float(df_hist['Close'].iloc[-2])
-            pivot = (prev_high + prev_low + prev_close) / 3.0
-            s1 = (2 * pivot) - prev_high
-            r1 = (2 * pivot) - prev_low
-            rolling_support = float(df_hist['Low'].min())
-            rolling_resistance = float(df_hist['High'].max())
-        else:
-            s1, r1 = spot_price * 0.95, spot_price * 1.05
-            rolling_support, rolling_resistance = spot_price * 0.90, spot_price * 1.10
-
         market_data[ticker] = {
-            "spot": round(spot_price, 2),
-            "s1": round(s1, 2),
-            "r1": round(r1, 2),
-            "floor": round(rolling_support, 2),
-            "ceiling": round(rolling_resistance, 2),
-            "support": round(min(s1, rolling_support), 2),
-            "resistance": round(max(r1, rolling_resistance), 2)
+            "spot": round(spot_price, 2)
         }
 
         # Match closest target periods to expiration timestamps
@@ -762,20 +779,20 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
             if closest:
                 target_to_ts[target] = closest
 
-        # Download needed option chains natively (Zero Pandas Overhead)
+        # Download unique option chains natively
         unique_ts = set(target_to_ts.values())
         loaded_chains = {}
         for ts in unique_ts:
             try:
                 url = f"{base_url}?date={ts}"
-                c_res = requests.get(url, headers=YF_SESSION.headers, timeout=5).json()
+                c_res = requests.get(url, headers=YF_SESSION.headers, timeout=4).json()
                 c_result = c_res.get("optionChain", {}).get("result", [])
                 if c_result and c_result[0].get("options"):
                     loaded_chains[ts] = c_result[0]["options"][0]
             except Exception:
                 continue
 
-        # Calculate Greeks from raw JSON dictionaries
+        # Calculate Greeks directly from lightweight dictionaries
         for target, ts in target_to_ts.items():
             if ts not in loaded_chains:
                 continue
@@ -790,7 +807,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
             exp_short = exp_date.strftime("%b %d")
             exp_stacked = f"{exp_short}<br><span class='text-[9px] text-slate-400 font-mono'>({b_days}d)</span>"
 
-            # 1. Evaluate Puts
+            # 1. Puts
             best_put = None
             min_p_diff = float("inf")
             for row in opts.get("puts", []):
@@ -823,11 +840,10 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
                     "pct_diff": f"{pct_diff:+.1f}%",
                     "iv": round(iv_val * 100, 1),
                     "prem": round(prem, 2),
-                    "ann": round(ann_pct, 1),
-                    "is_safe": k_val < market_data[ticker]["support"]
+                    "ann": round(ann_pct, 1)
                 }
 
-            # 2. Evaluate Calls
+            # 2. Calls
             best_call = None
             min_c_diff = float("inf")
             for row in opts.get("calls", []):
@@ -860,8 +876,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
                     "pct_diff": f"{pct_diff:+.1f}%",
                     "iv": round(iv_val * 100, 1),
                     "prem": round(prem, 2),
-                    "ann": round(ann_pct, 1),
-                    "is_safe": k_val > market_data[ticker]["resistance"]
+                    "ann": round(ann_pct, 1)
                 }
 
     result = {
