@@ -95,24 +95,8 @@ HTML_CONTENT = """<!DOCTYPE html>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-100 text-slate-800 p-2.5 sm:p-4 font-sans text-xs">
-  <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
-    <div class="grid grid-cols-2 gap-2 mb-2">
-      <div>
-        <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Tickers</label>
-        <input id="tickers" type="text" value="IREN, RKLB" class="w-full border rounded p-2 text-sm uppercase font-semibold">
-      </div>
-      <div>
-        <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Delta</label>
-        <input id="delta" type="number" step="0.01" value="0.15" class="w-full border rounded p-2 text-sm font-semibold">
-      </div>
-    </div>
-    <button onclick="fetchData()" id="refreshBtn" class="bg-blue-600 active:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg text-sm w-full mt-1">
-      Refresh Data
-    </button>
-    <div id="status" class="text-[11px] text-slate-500 mt-1.5 text-right font-medium">Ready</div>
-  </div>
 
-  <!-- Performance & Active Positions Box -->
+  <!-- 1. Performance & Active Positions (Contract Table) -->
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
     <div class="flex items-center justify-between mb-2">
       <h2 class="text-xs font-bold text-slate-800 flex items-center gap-1">
@@ -235,6 +219,25 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- 2. Tickers & Delta Box (Moved Below Contract Table) -->
+  <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
+    <div class="grid grid-cols-2 gap-2 mb-2">
+      <div>
+        <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Tickers</label>
+        <input id="tickers" type="text" value="IREN, RKLB" class="w-full border rounded p-2 text-sm uppercase font-semibold">
+      </div>
+      <div>
+        <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Delta</label>
+        <input id="delta" type="number" step="0.01" value="0.2" class="w-full border rounded p-2 text-sm font-semibold">
+      </div>
+    </div>
+    <button onclick="fetchData()" id="refreshBtn" class="bg-blue-600 active:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg text-sm w-full mt-1">
+      Refresh Data
+    </button>
+    <div id="status" class="text-[11px] text-slate-500 mt-1.5 text-right font-medium">Ready</div>
+  </div>
+
+  <!-- 3. Key Technical Levels -->
   <div class="mb-3">
     <h2 class="text-xs font-bold text-blue-950 bg-blue-100/80 p-2.5 rounded-t-lg border-t border-x border-blue-200 flex items-center justify-between">
       <span>📊 Spot &amp; Key Technical Levels</span>
@@ -261,11 +264,13 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- 4. Pill Switcher -->
   <div class="flex items-center gap-1.5 mb-3 overflow-x-auto py-1">
     <span class="text-[11px] font-bold text-slate-500 mr-1">View:</span>
     <div id="tickerPills" class="flex gap-1.5"></div>
   </div>
 
+  <!-- 5. Cash-Secured Puts -->
   <div class="mb-4">
     <h2 class="text-xs font-bold text-sky-900 bg-sky-100 p-2.5 rounded-t-lg border-t border-x border-sky-200">
       📉 Cash-Secured Puts (Green = Strike &lt; Support/Floor)
@@ -277,6 +282,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- 6. Covered Calls -->
   <div class="mb-6">
     <h2 class="text-xs font-bold text-amber-900 bg-amber-100 p-2.5 rounded-t-lg border-t border-x border-amber-200">
       📈 Covered Calls (Green = Strike &gt; Resistance/Ceiling)
@@ -359,7 +365,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
     }
 
-    // Direct inline field update saved straight to GitHub
     async function updatePositionField(id, field, value) {
       const targetPos = cloudPositions.find(p => p.id === id);
       if (!targetPos) return;
@@ -414,7 +419,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         }
       });
 
-      // Sort by Exp first (earliest to latest), then alphabetically by Ticker
       filteredPositions.sort((a, b) => {
         const dateDiff = new Date(a.exp) - new Date(b.exp);
         if (dateDiff !== 0) return dateDiff;
@@ -422,8 +426,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       });
 
       const todayStr = now.toISOString().split('T')[0];
-
-      // Ticker Open Contracts aggregation
       const openStats = {};
       let totalOpenCount = 0;
 
@@ -440,7 +442,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         }
       });
 
-      // Render Open Contracts Summary Cards
       const summaryContainer = document.getElementById('openSummaryCards');
       document.getElementById('totalOpenQty').innerText = `Total Open: ${totalOpenCount} contracts`;
       const openTickers = Object.keys(openStats);
@@ -663,7 +664,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         const isSweetSpot = (tgt === 21 || tgt === 30);
         const badge = isSweetSpot ? '★ ' : '';
 
-        // Match background color for rows with identical expiration
         let rowExpKey = '';
         for (const t of tickers) {
           if (results[tgt] && results[tgt][t] && results[tgt][t].raw_exp) {
@@ -743,7 +743,7 @@ def remove_position(pos_id: int):
     return {"status": "success"}
 
 @app.get("/api/data")
-def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
+def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
     ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
     target_periods = [7, 14, 21, 30]
     today = datetime.date.today()
