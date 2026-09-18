@@ -15,7 +15,6 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
 
-# Custom browser session to reduce throttling from Yahoo Finance
 YF_SESSION = requests.Session()
 YF_SESSION.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -26,13 +25,19 @@ def norm_cdf(x):
 
 def calc_put_delta(S, K, T, r, sigma):
     if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0.0
-    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
-    return norm_cdf(d1) - 1.0
+    try:
+        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+        return norm_cdf(d1) - 1.0
+    except Exception:
+        return 0.0
 
 def calc_call_delta(S, K, T, r, sigma):
     if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0.0
-    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
-    return norm_cdf(d1)
+    try:
+        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+        return norm_cdf(d1)
+    except Exception:
+        return 0.0
 
 def count_business_days(start_date, end_date):
     days = 0
@@ -575,7 +580,7 @@ HTML_CONTENT = """<!DOCTYPE html>
               <span class="animate-spin h-3.5 w-3.5 border-2 border-blue-600 border-t-transparent rounded-full"></span>
               <span>Fetching options chain from Yahoo Finance...</span>
             </div>
-            <div class="text-[10px] text-slate-400 mt-1">If yfinance takes more than 10 seconds, please wait as it checks each date.</div>
+            <div class="text-[10px] text-slate-400 mt-1">Checking available contracts...</div>
           </td>
         </tr>
       `;
@@ -602,13 +607,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       clearInterval(progressTimer);
       progressTimer = setInterval(() => {
         elapsedSeconds++;
-        if (elapsedSeconds < 10) {
-          status.innerText = `⏳ Contacting Yahoo Finance (${elapsedSeconds}s)...`;
-        } else if (elapsedSeconds < 25) {
-          status.innerText = `⏳ Yahoo Finance is responding slowly (${elapsedSeconds}s elapsed)...`;
-        } else {
-          status.innerText = `⚠️ Still waiting on Yahoo Finance (${elapsedSeconds}s) - Render CPU may be processing...`;
-        }
+        status.innerText = `⏳ Contacting Yahoo Finance (${elapsedSeconds}s)...`;
       }, 1000);
 
       const tickers = document.getElementById('tickers').value;
@@ -620,6 +619,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         if (!res.ok) throw new Error("API error " + res.status);
         globalData = await res.json();
+        console.log("Option Chain Data Received:", globalData);
 
         renderLevelsTable(globalData.market);
         renderPills(globalData.tickers);
@@ -629,7 +629,8 @@ HTML_CONTENT = """<!DOCTYPE html>
         status.innerHTML = `<span class="text-emerald-600 font-bold">✓ Updated</span> at ${new Date().toLocaleTimeString()} (${elapsedSeconds}s)`;
       } catch (err) {
         clearInterval(progressTimer);
-        status.innerHTML = `<span class="text-rose-600 font-bold">✕ Yahoo Finance did not respond in time.</span> Please retry.`;
+        console.error("Fetch Error:", err);
+        status.innerHTML = `<span class="text-rose-600 font-bold">✕ Yahoo Finance did not respond.</span> Please retry.`;
         document.getElementById('putsBody').innerHTML = `<tr><td class="p-3 text-center text-rose-500">Could not load Put chain. Tap 'Refresh Data' to try again.</td></tr>`;
         document.getElementById('callsBody').innerHTML = `<tr><td class="p-3 text-center text-rose-500">Could not load Call chain. Tap 'Refresh Data' to try again.</td></tr>`;
       } finally {
@@ -722,10 +723,13 @@ HTML_CONTENT = """<!DOCTYPE html>
         const isSweetSpot = (tgt === 21 || tgt === 30);
         const badge = isSweetSpot ? '★ ' : '';
 
+        // Safely check both integer and string keyed results
+        const targetDict = (results && (results[tgt] || results[String(tgt)])) || {};
+
         let rowExpKey = '';
         for (const t of tickers) {
-          if (results[tgt] && results[tgt][t] && results[tgt][t].raw_exp) {
-            rowExpKey = results[tgt][t].raw_exp;
+          if (targetDict[t] && targetDict[t].raw_exp) {
+            rowExpKey = targetDict[t].raw_exp;
             break;
           }
         }
@@ -734,7 +738,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         let rowHtml = `<tr class="border-b ${rowBg}"><td class="p-2 border-r-2 border-r-slate-400 whitespace-nowrap font-bold text-slate-700 bg-slate-50">${badge}${tgt}d</td>`;
 
         tickers.forEach(t => {
-          const item = results[tgt] && results[tgt][t];
+          const item = targetDict[t];
           if (item) {
             const strikeBg = item.is_safe ? 'bg-green-200 text-green-900 font-bold' : '';
             rowHtml += `
@@ -807,19 +811,25 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
     today = datetime.date.today()
     
     market_data = {}
-    results_puts = {t: {} for t in target_periods}
-    results_calls = {t: {} for t in target_periods}
+    # Use string keys so JSON serialization matches exactly
+    results_puts = {str(t): {} for t in target_periods}
+    results_calls = {str(t): {} for t in target_periods}
 
     for ticker in ticker_list:
         try:
             tkr = yf.Ticker(ticker, session=YF_SESSION)
             spot_price = tkr.fast_info.get("lastPrice", 0)
-            expirations = tkr.options
+            if not spot_price or spot_price <= 0:
+                hist_1d = tkr.history(period="1d")
+                if not hist_1d.empty:
+                    spot_price = float(hist_1d['Close'].iloc[-1])
+
+            expirations = list(tkr.options)
             df_hist = tkr.history(period="30d")
         except Exception:
             continue
 
-        if not expirations or spot_price == 0:
+        if not expirations or spot_price <= 0:
             continue
 
         if not df_hist.empty and len(df_hist) >= 2:
@@ -845,83 +855,118 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
             "resistance": round(max(r1, rolling_resistance), 2)
         }
 
+        # 1. Match closest expiration dates by minimum day difference (never misses a date)
+        target_to_exp = {}
         for target in target_periods:
-            max_b_days_limit = math.ceil(target * (5.0 / 7.0))
-            closest_exp, actual_b_days = None, 0
-            max_b = -1
-
+            closest_exp = None
+            min_diff = float("inf")
             for exp in expirations:
-                exp_date = datetime.datetime.strptime(exp, "%Y-%m-%d").date()
-                if exp_date <= today: continue
-                b_days = count_business_days(today, exp_date)
-                if b_days <= max_b_days_limit and b_days > max_b:
-                    max_b = b_days
-                    closest_exp = exp
-                    actual_b_days = b_days
-
-            if closest_exp:
                 try:
-                    chain = tkr.option_chain(closest_exp)
-                    puts, calls = chain.puts, chain.calls
+                    exp_date = datetime.datetime.strptime(exp, "%Y-%m-%d").date()
                 except Exception:
                     continue
+                if exp_date <= today:
+                    continue
+                diff = abs((exp_date - today).days - target)
+                if diff < min_diff:
+                    min_diff = diff
+                    closest_exp = exp
+            if closest_exp:
+                target_to_exp[target] = closest_exp
 
-                T = max(actual_b_days, 1) / 252.0
-                r = 0.05
-                
-                exp_short = datetime.datetime.strptime(closest_exp, "%Y-%m-%d").strftime("%b %d")
-                exp_stacked = f"{exp_short}<br><span class='text-[9px] text-slate-400 font-mono'>({actual_b_days}d)</span>"
+        # 2. Download option chain once per unique expiration
+        unique_exps = set(target_to_exp.values())
+        loaded_chains = {}
+        for exp in unique_exps:
+            try:
+                loaded_chains[exp] = tkr.option_chain(exp)
+            except Exception:
+                continue
 
-                # Puts
+        # 3. Calculate Greeks and populate results
+        for target, exp in target_to_exp.items():
+            if exp not in loaded_chains:
+                continue
+
+            chain = loaded_chains[exp]
+            puts, calls = chain.puts, chain.calls
+            exp_date = datetime.datetime.strptime(exp, "%Y-%m-%d").date()
+            actual_b_days = count_business_days(today, exp_date)
+
+            T = max(actual_b_days, 1) / 252.0
+            r = 0.05
+            
+            exp_short = exp_date.strftime("%b %d")
+            exp_stacked = f"{exp_short}<br><span class='text-[9px] text-slate-400 font-mono'>({actual_b_days}d)</span>"
+
+            # Puts
+            if puts is not None and not puts.empty:
                 best_put = None
                 min_p_diff = float("inf")
                 for _, row in puts.iterrows():
-                    K, iv = row['strike'], row['impliedVolatility']
-                    d = calc_put_delta(spot_price, K, T, r, sigma=iv)
-                    if abs(d - (-delta)) < min_p_diff:
-                        min_p_diff = abs(d - (-delta))
-                        best_put = row
+                    try:
+                        K = float(row['strike'])
+                        iv = float(row['impliedVolatility']) if ('impliedVolatility' in row and not math.isnan(row['impliedVolatility'])) else 0.5
+                        d = calc_put_delta(spot_price, K, T, r, sigma=iv)
+                        if abs(d - (-delta)) < min_p_diff:
+                            min_p_diff = abs(d - (-delta))
+                            best_put = (row, K, iv)
+                    except Exception:
+                        continue
 
                 if best_put is not None:
-                    prem = best_put['bid'] if best_put['bid'] > 0 else best_put['lastPrice']
-                    yield_pct = (prem / best_put['strike'] * 100) if best_put['strike'] > 0 else 0
+                    row, k_val, iv_val = best_put
+                    bid = float(row.get('bid', 0)) if not math.isnan(row.get('bid', 0)) else 0
+                    last_p = float(row.get('lastPrice', 0)) if not math.isnan(row.get('lastPrice', 0)) else 0
+                    prem = bid if bid > 0 else last_p
+                    yield_pct = (prem / k_val * 100) if k_val > 0 else 0
                     ann_pct = yield_pct * 252 / actual_b_days
-                    pct_diff = ((best_put['strike'] - spot_price) / spot_price) * 100
-                    results_puts[target][ticker] = {
-                        "raw_exp": closest_exp,
+                    pct_diff = ((k_val - spot_price) / spot_price) * 100
+
+                    results_puts[str(target)][ticker] = {
+                        "raw_exp": exp,
                         "exp": exp_stacked,
-                        "strike": round(best_put['strike'], 2),
+                        "strike": round(k_val, 2),
                         "pct_diff": f"{pct_diff:+.1f}%",
-                        "iv": round(best_put['impliedVolatility'] * 100, 1),
+                        "iv": round(iv_val * 100, 1),
                         "prem": round(prem, 2),
                         "ann": round(ann_pct, 1),
-                        "is_safe": best_put['strike'] < market_data[ticker]["support"]
+                        "is_safe": k_val < market_data[ticker]["support"]
                     }
 
-                # Calls
+            # Calls
+            if calls is not None and not calls.empty:
                 best_call = None
                 min_c_diff = float("inf")
                 for _, row in calls.iterrows():
-                    K, iv = row['strike'], row['impliedVolatility']
-                    d = calc_call_delta(spot_price, K, T, r, sigma=iv)
-                    if abs(d - delta) < min_c_diff:
-                        min_c_diff = abs(d - delta)
-                        best_call = row
+                    try:
+                        K = float(row['strike'])
+                        iv = float(row['impliedVolatility']) if ('impliedVolatility' in row and not math.isnan(row['impliedVolatility'])) else 0.5
+                        d = calc_call_delta(spot_price, K, T, r, sigma=iv)
+                        if abs(d - delta) < min_c_diff:
+                            min_c_diff = abs(d - delta)
+                            best_call = (row, K, iv)
+                    except Exception:
+                        continue
 
                 if best_call is not None:
-                    prem = best_call['bid'] if best_call['bid'] > 0 else best_call['lastPrice']
+                    row, k_val, iv_val = best_call
+                    bid = float(row.get('bid', 0)) if not math.isnan(row.get('bid', 0)) else 0
+                    last_p = float(row.get('lastPrice', 0)) if not math.isnan(row.get('lastPrice', 0)) else 0
+                    prem = bid if bid > 0 else last_p
                     yield_pct = (prem / spot_price * 100) if spot_price > 0 else 0
                     ann_pct = yield_pct * 252 / actual_b_days
-                    pct_diff = ((best_call['strike'] - spot_price) / spot_price) * 100
-                    results_calls[target][ticker] = {
-                        "raw_exp": closest_exp,
+                    pct_diff = ((k_val - spot_price) / spot_price) * 100
+
+                    results_calls[str(target)][ticker] = {
+                        "raw_exp": exp,
                         "exp": exp_stacked,
-                        "strike": round(best_call['strike'], 2),
+                        "strike": round(k_val, 2),
                         "pct_diff": f"{pct_diff:+.1f}%",
-                        "iv": round(best_call['impliedVolatility'] * 100, 1),
+                        "iv": round(iv_val * 100, 1),
                         "prem": round(prem, 2),
                         "ann": round(ann_pct, 1),
-                        "is_safe": best_call['strike'] > market_data[ticker]["resistance"]
+                        "is_safe": k_val > market_data[ticker]["resistance"]
                     }
 
     return {
