@@ -90,7 +90,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Options Yield & Performance Tracker</title>
+  <title>Options Tracker (Cloud Sync)</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-100 text-slate-800 p-2.5 sm:p-4 font-sans text-xs">
@@ -115,7 +115,7 @@ HTML_CONTENT = """<!DOCTYPE html>
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
     <div class="flex items-center justify-between mb-2">
       <h2 class="text-xs font-bold text-slate-800 flex items-center gap-1">
-        <span>💼</span> Performance &amp; Positions (This Month Only)
+        <span>💼</span> Performance &amp; Active Positions
       </h2>
       <button onclick="toggleAddForm()" id="toggleFormBtn" class="bg-slate-800 text-white text-[10px] font-bold px-2.5 py-1 rounded-md">
         + Add Position
@@ -561,10 +561,10 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       const tableColorMap = {};
       targets.forEach(tgt => {
-        const isSweetSpot = (tgt === 30 || tgt === 45);
+        const isSweetSpot = (tgt === 21 || tgt === 30);
         const badge = isSweetSpot ? '★ ' : '';
 
-        // Extract raw expiration to color rows of the same expiration date
+        // Match background color for rows with identical expiration
         let rowExpKey = '';
         for (const t of tickers) {
           if (results[tgt] && results[tgt][t] && results[tgt][t].raw_exp) {
@@ -630,7 +630,8 @@ def remove_position(pos_id: int):
 @app.get("/api/data")
 def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
     ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
-    target_periods = [7, 14, 30, 45, 60, 90]
+    # Updated target periods: removed 60 and 90, changed 45 to 21
+    target_periods = [7, 14, 21, 30]
     today = datetime.date.today()
     
     market_data = {}
