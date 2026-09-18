@@ -190,5 +190,16 @@
     "qty": 2,
     "exp": "2026-10-02",
     "trade_date": "2026-09-18"
+  },
+  {
+    "id": 1789745854264,
+    "action": "SELL",
+    "type": "PUT",
+    "ticker": "RKLB",
+    "strike": 60.0,
+    "prem": 2.8,
+    "qty": 2,
+    "exp": "2026-10-16",
+    "trade_date": "2026-09-18"
   }
 ]
