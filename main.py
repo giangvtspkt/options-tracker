@@ -1,9 +1,9 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+import yfinance as yf
 import math
 import datetime
-import time
 import os
 import json
 import base64
@@ -15,32 +15,18 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
 
-DATA_CACHE = {}
-CACHE_TTL = 120
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "application/json"
-}
-
 def norm_cdf(x):
     return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
 
 def calc_put_delta(S, K, T, r, sigma):
-    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return -0.5
-    try:
-        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
-        return norm_cdf(d1) - 1.0
-    except Exception:
-        return -0.5
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0.0
+    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    return norm_cdf(d1) - 1.0
 
 def calc_call_delta(S, K, T, r, sigma):
-    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0.5
-    try:
-        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
-        return norm_cdf(d1)
-    except Exception:
-        return 0.5
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0.0
+    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    return norm_cdf(d1)
 
 def count_business_days(start_date, end_date):
     days = 0
@@ -59,14 +45,14 @@ def get_positions_from_github():
         "Authorization": f"token {GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3+json"
     }
-    try:
-        r = requests.get(url, headers=headers, timeout=4)
-        if r.status_code == 200:
-            data = r.json()
-            content = base64.b64decode(data['content']).decode('utf-8')
+    r = requests.get(url, headers=headers)
+    if r.status_code == 200:
+        data = r.json()
+        content = base64.b64decode(data['content']).decode('utf-8')
+        try:
             return json.loads(content), data.get('sha')
-    except Exception:
-        pass
+        except:
+            return [], data.get('sha')
     return [], None
 
 def save_positions_to_github(positions):
@@ -80,14 +66,14 @@ def save_positions_to_github(positions):
     _, sha = get_positions_from_github()
     content_str = json.dumps(positions, indent=2)
     encoded = base64.b64encode(content_str.encode('utf-8')).decode('utf-8')
-    payload = {"message": "Update positions storage", "content": encoded}
+    payload = {
+        "message": "Update positions storage",
+        "content": encoded
+    }
     if sha:
         payload["sha"] = sha
-    try:
-        res = requests.put(url, headers=headers, json=payload, timeout=4)
-        return res.status_code in [200, 201]
-    except Exception:
-        return False
+    res = requests.put(url, headers=headers, json=payload)
+    return res.status_code in [200, 201]
 
 class PositionModel(BaseModel):
     id: int
@@ -104,7 +90,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Options Yield Tracker</title>
+  <title>Options Yield & Performance Tracker</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-100 text-slate-800 p-2.5 sm:p-4 font-sans text-xs">
@@ -125,16 +111,18 @@ HTML_CONTENT = """<!DOCTYPE html>
     <div id="status" class="text-[11px] text-slate-500 mt-1.5 text-right font-medium">Ready</div>
   </div>
 
+  <!-- Performance & Positions Box -->
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
     <div class="flex items-center justify-between mb-2">
       <h2 class="text-xs font-bold text-slate-800 flex items-center gap-1">
-        <span>💼</span> Performance &amp; Active Positions
+        <span>💼</span> Performance &amp; Positions (This Month Only)
       </h2>
       <button onclick="toggleAddForm()" id="toggleFormBtn" class="bg-slate-800 text-white text-[10px] font-bold px-2.5 py-1 rounded-md">
         + Add Position
       </button>
     </div>
 
+    <!-- P/L Metrics Cards -->
     <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-3">
       <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
         <div class="text-[10px] font-bold text-slate-500">Total Realized</div>
@@ -201,7 +189,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
 
       <div class="flex gap-2 pt-1">
-        <button onclick="savePosition()" class="bg-emerald-600 active:bg-emerald-700 text-white font-bold py-1.5 px-3 rounded text-xs flex-1">Save</button>
+        <button onclick="savePosition()" class="bg-emerald-600 active:bg-emerald-700 text-white font-bold py-1.5 px-3 rounded text-xs flex-1">Save to Cloud</button>
         <button onclick="toggleAddForm()" class="bg-slate-300 text-slate-700 font-bold py-1.5 px-3 rounded text-xs">Cancel</button>
       </div>
     </div>
@@ -226,6 +214,32 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
   </div>
 
+  <div class="mb-3">
+    <h2 class="text-xs font-bold text-blue-950 bg-blue-100/80 p-2.5 rounded-t-lg border-t border-x border-blue-200 flex items-center justify-between">
+      <span>📊 Spot &amp; Key Technical Levels</span>
+      <span class="text-[10px] font-normal text-blue-800">Support (Floor) | Resistance (Ceiling)</span>
+    </h2>
+    <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
+      <table class="w-full text-left" id="levelsTable">
+        <thead class="bg-slate-50 border-b border-slate-200 text-[11px] text-slate-600">
+          <tr>
+            <th class="p-2 border-r font-bold">Ticker</th>
+            <th class="p-2 border-r font-bold">Spot Price</th>
+            <th class="p-2 border-r font-bold text-emerald-800 bg-emerald-50/50">Support Floor (Min)</th>
+            <th class="p-2 border-r font-medium text-slate-600">S1 Pivot</th>
+            <th class="p-2 border-r font-medium text-slate-600">30d Low</th>
+            <th class="p-2 border-r font-bold text-rose-800 bg-rose-50/50">Resistance Ceiling (Max)</th>
+            <th class="p-2 border-r font-medium text-slate-600">R1 Pivot</th>
+            <th class="p-2 font-medium text-slate-600">30d High</th>
+          </tr>
+        </thead>
+        <tbody id="levelsBody">
+          <tr><td colspan="8" class="p-3 text-center text-slate-400">Loading market levels...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <div class="flex items-center gap-1.5 mb-3 overflow-x-auto py-1">
     <span class="text-[11px] font-bold text-slate-500 mr-1">View:</span>
     <div id="tickerPills" class="flex gap-1.5"></div>
@@ -233,26 +247,22 @@ HTML_CONTENT = """<!DOCTYPE html>
 
   <div class="mb-4">
     <h2 class="text-xs font-bold text-sky-900 bg-sky-100 p-2.5 rounded-t-lg border-t border-x border-sky-200">
-      📉 Cash-Secured Puts
+      📉 Cash-Secured Puts (Green = Strike &lt; Support/Floor)
     </h2>
     <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
       <table class="w-full text-left" id="putsTable">
-        <tbody id="putsBody">
-          <tr><td class="p-4 text-center text-slate-400">Loading Put table...</td></tr>
-        </tbody>
+        <tbody id="putsBody"></tbody>
       </table>
     </div>
   </div>
 
   <div class="mb-6">
     <h2 class="text-xs font-bold text-amber-900 bg-amber-100 p-2.5 rounded-t-lg border-t border-x border-amber-200">
-      📈 Covered Calls
+      📈 Covered Calls (Green = Strike &gt; Resistance/Ceiling)
     </h2>
     <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
       <table class="w-full text-left" id="callsTable">
-        <tbody id="callsBody">
-          <tr><td class="p-4 text-center text-slate-400">Loading Call table...</td></tr>
-        </tbody>
+        <tbody id="callsBody"></tbody>
       </table>
     </div>
   </div>
@@ -318,11 +328,13 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (res.ok) {
         toggleAddForm();
         loadCloudPositions();
+      } else {
+        alert('Could not save to GitHub. Check environment variables.');
       }
     }
 
     async function deletePosition(id) {
-      if (!confirm("Delete this position?")) return;
+      if (!confirm("Delete this position from GitHub?")) return;
       const res = await fetch(`/api/positions/${id}`, { method: 'DELETE' });
       if (res.ok) loadCloudPositions();
     }
@@ -345,12 +357,12 @@ HTML_CONTENT = """<!DOCTYPE html>
         const parts = p.exp.split('-');
         const pYear = parseInt(parts[0], 10);
         const pMonth = parseInt(parts[1], 10) - 1;
-
         if (pYear > currentYear || (pYear === currentYear && pMonth >= currentMonth)) {
           filteredPositions.push(p);
         }
       });
 
+      // Sort by Exp first (earliest to latest), then alphabetically by Ticker
       filteredPositions.sort((a, b) => {
         const dateDiff = new Date(a.exp) - new Date(b.exp);
         if (dateDiff !== 0) return dateDiff;
@@ -369,13 +381,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       tbody.innerHTML = '';
       const todayStr = now.toISOString().split('T')[0];
-
-      let totalRealized = 0;
-      let thisMonthRealized = 0;
-      let lastMonthRealized = 0;
-      let thisMonthUnrealized = 0;
-      let totalUnrealized = 0;
-
+      let totalRealized = 0, thisMonthRealized = 0, lastMonthRealized = 0, thisMonthUnrealized = 0, totalUnrealized = 0;
       const posColorMap = {};
 
       filteredPositions.forEach(p => {
@@ -384,10 +390,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         const pMonth = parseInt(parts[1], 10) - 1;
         const isExpired = p.exp < todayStr;
         const isThisMonth = (pYear === currentYear && pMonth === currentMonth);
-
-        const spot = (globalData && globalData.market && globalData.market[p.ticker]) 
-          ? globalData.market[p.ticker].spot 
-          : null;
+        const spot = (globalData && globalData.market && globalData.market[p.ticker]) ? globalData.market[p.ticker].spot : null;
 
         let pl = 0;
         let statusHtml = '';
@@ -409,22 +412,13 @@ HTML_CONTENT = """<!DOCTYPE html>
           }
 
           totalRealized += pl;
-          if (isThisMonth) {
-            thisMonthRealized += pl;
-          } else if (pYear === lastMonthYear && pMonth === lastMonth) {
-            lastMonthRealized += pl;
-          }
+          if (isThisMonth) thisMonthRealized += pl;
+          else if (pYear === lastMonthYear && pMonth === lastMonth) lastMonthRealized += pl;
         } else {
-          if (p.action === 'SELL') {
-            pl = p.prem * 100 * p.qty;
-          } else {
-            pl = 0;
-          }
+          pl = p.action === 'SELL' ? (p.prem * 100 * p.qty) : 0;
           statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
           totalUnrealized += pl;
-          if (isThisMonth) {
-            thisMonthUnrealized += pl;
-          }
+          if (isThisMonth) thisMonthUnrealized += pl;
         }
 
         const plColor = pl >= 0 ? 'text-emerald-700' : 'text-rose-700';
@@ -436,7 +430,6 @@ HTML_CONTENT = """<!DOCTYPE html>
           : '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">BUY</span>';
 
         const rowBg = getExpColor(p.exp, posColorMap);
-
         const tr = document.createElement('tr');
         tr.className = `border-b ${rowBg}`;
         tr.innerHTML = `
@@ -454,27 +447,11 @@ HTML_CONTENT = """<!DOCTYPE html>
       });
 
       const fmt = (val) => `${val >= 0 ? '+$' : '-$'}${Math.abs(val).toFixed(2)}`;
-      const cls = (val) => `text-xs font-extrabold font-mono ${val >= 0 ? 'text-emerald-700' : 'text-rose-700'}`;
-
-      const totEl = document.getElementById('totalRealized');
-      totEl.innerText = fmt(totalRealized);
-      totEl.className = cls(totalRealized);
-
-      const lastEl = document.getElementById('lastMonthRealized');
-      lastEl.innerText = fmt(lastMonthRealized);
-      lastEl.className = cls(lastMonthRealized);
-
-      const thisEl = document.getElementById('thisMonthRealized');
-      thisEl.innerText = fmt(thisMonthRealized);
-      thisEl.className = cls(thisMonthRealized);
-
-      const thisUnEl = document.getElementById('thisMonthUnrealized');
-      thisUnEl.innerText = fmt(thisMonthUnrealized);
-      thisUnEl.className = cls(thisMonthUnrealized);
-
-      const totUnEl = document.getElementById('totalUnrealized');
-      totUnEl.innerText = fmt(totalUnrealized);
-      totUnEl.className = cls(totalUnrealized);
+      document.getElementById('totalRealized').innerText = fmt(totalRealized);
+      document.getElementById('lastMonthRealized').innerText = fmt(lastMonthRealized);
+      document.getElementById('thisMonthRealized').innerText = fmt(thisMonthRealized);
+      document.getElementById('thisMonthUnrealized').innerText = fmt(thisMonthUnrealized);
+      document.getElementById('totalUnrealized').innerText = fmt(totalUnrealized);
     }
 
     async function fetchData() {
@@ -488,16 +465,17 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       try {
         const res = await fetch(`/api/data?tickers=${encodeURIComponent(tickers)}&delta=${delta}`);
-        if (!res.ok) throw new Error("HTTP " + res.status);
+        if (!res.ok) throw new Error("API error");
         globalData = await res.json();
 
+        renderLevelsTable(globalData.market);
         renderPills(globalData.tickers);
         renderBothTables();
         renderPositionsAndPL();
 
         status.innerText = "Updated: " + new Date().toLocaleTimeString();
       } catch (err) {
-        status.innerText = "Error loading data.";
+        status.innerText = "Fetch error";
       } finally {
         btn.disabled = false;
       }
@@ -521,6 +499,31 @@ HTML_CONTENT = """<!DOCTYPE html>
       });
     }
 
+    function renderLevelsTable(market) {
+      const tbody = document.getElementById('levelsBody');
+      tbody.innerHTML = '';
+      const entries = Object.entries(market);
+      if (entries.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" class="p-3 text-center text-slate-400">No ticker data available.</td></tr>`;
+        return;
+      }
+      entries.forEach(([ticker, m]) => {
+        const tr = document.createElement('tr');
+        tr.className = "border-b hover:bg-slate-50 text-[11px]";
+        tr.innerHTML = `
+          <td class="p-2 border-r font-bold text-slate-800 bg-slate-50">${ticker}</td>
+          <td class="p-2 border-r font-bold text-blue-700 font-mono">$${m.spot}</td>
+          <td class="p-2 border-r font-bold text-emerald-800 bg-emerald-50/70 font-mono">$${m.support}</td>
+          <td class="p-2 border-r text-slate-600 font-mono">$${m.s1}</td>
+          <td class="p-2 border-r text-slate-600 font-mono">$${m.floor}</td>
+          <td class="p-2 border-r font-bold text-rose-800 bg-rose-50/70 font-mono">$${m.resistance}</td>
+          <td class="p-2 border-r text-slate-600 font-mono">$${m.r1}</td>
+          <td class="p-2 text-slate-600 font-mono">$${m.ceiling}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
     function renderBothTables() {
       if (!globalData) return;
       const displayTickers = selectedTicker === 'ALL' ? globalData.tickers : [selectedTicker];
@@ -531,10 +534,10 @@ HTML_CONTENT = """<!DOCTYPE html>
     function renderTable(elementId, results, tickers, targets) {
       const tbody = document.getElementById(elementId);
       tbody.innerHTML = '';
-
       const tickerColors = [
         { header: 'bg-slate-700 text-white', sub: 'bg-slate-100 text-slate-700' },
-        { header: 'bg-indigo-900 text-white', sub: 'bg-indigo-50 text-indigo-950' }
+        { header: 'bg-indigo-900 text-white', sub: 'bg-indigo-50 text-indigo-950' },
+        { header: 'bg-teal-900 text-white', sub: 'bg-teal-50 text-teal-950' }
       ];
 
       let headHtml = `<tr class="border-b text-[11px]"><th class="p-2 border-r-2 border-r-slate-400 bg-slate-200">Target</th>`;
@@ -558,27 +561,28 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       const tableColorMap = {};
       targets.forEach(tgt => {
-        const targetKey = String(tgt);
-        const targetDict = results[tgt] || results[targetKey] || {};
+        const isSweetSpot = (tgt === 30 || tgt === 45);
+        const badge = isSweetSpot ? '★ ' : '';
 
+        // Extract raw expiration to color rows of the same expiration date
         let rowExpKey = '';
         for (const t of tickers) {
-          if (targetDict[t]?.raw_exp) {
-            rowExpKey = targetDict[t].raw_exp;
+          if (results[tgt] && results[tgt][t] && results[tgt][t].raw_exp) {
+            rowExpKey = results[tgt][t].raw_exp;
             break;
           }
         }
 
         const rowBg = getExpColor(rowExpKey, tableColorMap);
-        const badge = (tgt === 21 || tgt === 30) ? '★ ' : '';
+        let rowHtml = `<tr class="border-b ${rowBg}"><td class="p-2 border-r-2 border-r-slate-400 whitespace-nowrap font-bold text-slate-700 bg-slate-50">${badge}${tgt}d</td>`;
 
-        let rowHtml = `<tr class="border-b ${rowBg}"><td class="p-2 border-r-2 border-r-slate-400 whitespace-nowrap font-bold text-slate-700">${badge}${tgt}d</td>`;
         tickers.forEach(t => {
-          const item = targetDict[t];
+          const item = results[tgt] && results[tgt][t];
           if (item) {
+            const strikeBg = item.is_safe ? 'bg-green-200 text-green-900 font-bold' : '';
             rowHtml += `
               <td class="p-1 border-r text-center leading-tight text-[10px] text-slate-700">${item.exp}</td>
-              <td class="p-1.5 border-r whitespace-nowrap font-semibold">$${item.strike} <span class="text-[9px]">(${item.pct_diff})</span></td>
+              <td class="p-1.5 border-r whitespace-nowrap ${strikeBg}">$${item.strike} <span class="text-[9px]">(${item.pct_diff})</span></td>
               <td class="p-1.5 border-r whitespace-nowrap text-slate-500 font-mono">${item.iv}%</td>
               <td class="p-1.5 border-r whitespace-nowrap font-bold">$${item.prem}</td>
               <td class="p-1.5 border-r-2 border-r-slate-400 whitespace-nowrap text-emerald-700 font-bold">${item.ann}%</td>
@@ -625,165 +629,135 @@ def remove_position(pos_id: int):
 
 @app.get("/api/data")
 def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
-    cache_key = f"{tickers}_{delta}"
-    now = time.time()
-    
-    if cache_key in DATA_CACHE and (now - DATA_CACHE[cache_key]["time"]) < CACHE_TTL:
-        return DATA_CACHE[cache_key]["data"]
-
     ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
-    target_periods = [7, 14, 21, 30]
+    target_periods = [7, 14, 30, 45, 60, 90]
     today = datetime.date.today()
     
     market_data = {}
-    results_puts = {str(t): {} for t in target_periods}
-    results_calls = {str(t): {} for t in target_periods}
+    results_puts = {t: {} for t in target_periods}
+    results_calls = {t: {} for t in target_periods}
 
     for ticker in ticker_list:
+        tkr = yf.Ticker(ticker)
         try:
-            # Single ultra-fast query to Yahoo's native options chart API
-            base_url = f"https://query1.finance.yahoo.com/v7/finance/options/{ticker}"
-            resp = requests.get(base_url, headers=HEADERS, timeout=4)
-            data = resp.json()
-            
-            result_list = data.get("optionChain", {}).get("result", [])
-            if not result_list:
-                continue
+            spot_price = tkr.fast_info.get("lastPrice", 0)
+            expirations = tkr.options
+            df_hist = tkr.history(period="30d")
+        except Exception:
+            continue
 
-            chain_data = result_list[0]
-            quote = chain_data.get("quote", {})
-            spot_price = quote.get("regularMarketPrice", 0)
-            timestamps = chain_data.get("expirationDates", [])
+        if not expirations or spot_price == 0:
+            continue
 
-            if spot_price <= 0 or not timestamps:
-                continue
+        if not df_hist.empty and len(df_hist) >= 2:
+            prev_high = float(df_hist['High'].iloc[-2])
+            prev_low = float(df_hist['Low'].iloc[-2])
+            prev_close = float(df_hist['Close'].iloc[-2])
+            pivot = (prev_high + prev_low + prev_close) / 3.0
+            s1 = (2 * pivot) - prev_high
+            r1 = (2 * pivot) - prev_low
+            rolling_support = float(df_hist['Low'].min())
+            rolling_resistance = float(df_hist['High'].max())
+        else:
+            s1, r1 = spot_price * 0.95, spot_price * 1.05
+            rolling_support, rolling_resistance = spot_price * 0.90, spot_price * 1.10
 
-            market_data[ticker] = {"spot": round(spot_price, 2)}
+        market_data[ticker] = {
+            "spot": round(spot_price, 2),
+            "s1": round(s1, 2),
+            "r1": round(r1, 2),
+            "floor": round(rolling_support, 2),
+            "ceiling": round(rolling_resistance, 2),
+            "support": round(min(s1, rolling_support), 2),
+            "resistance": round(max(r1, rolling_resistance), 2)
+        }
 
-            # Map target days to closest expiration timestamps
-            target_to_ts = {}
-            for target in target_periods:
-                closest_ts = None
-                min_diff = float("inf")
-                for ts in timestamps:
-                    exp_date = datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).date()
-                    if exp_date <= today:
-                        continue
-                    diff = abs((exp_date - today).days - target)
-                    if diff < min_diff:
-                        min_diff = diff
-                        closest_ts = ts
-                if closest_ts:
-                    target_to_ts[target] = closest_ts
+        for target in target_periods:
+            max_b_days_limit = math.ceil(target * (5.0 / 7.0))
+            closest_exp, actual_b_days = None, 0
+            max_b = -1
 
-            # Fetch option chain for unique dates
-            loaded_chains = {}
-            unique_ts = set(target_to_ts.values())
-            for ts in unique_ts:
+            for exp in expirations:
+                exp_date = datetime.datetime.strptime(exp, "%Y-%m-%d").date()
+                if exp_date <= today: continue
+                b_days = count_business_days(today, exp_date)
+                if b_days <= max_b_days_limit and b_days > max_b:
+                    max_b = b_days
+                    closest_exp = exp
+                    actual_b_days = b_days
+
+            if closest_exp:
                 try:
-                    ts_url = f"{base_url}?date={ts}"
-                    ts_resp = requests.get(ts_url, headers=HEADERS, timeout=4).json()
-                    res_opts = ts_resp.get("optionChain", {}).get("result", [])
-                    if res_opts and res_opts[0].get("options"):
-                        loaded_chains[ts] = res_opts[0]["options"][0]
+                    chain = tkr.option_chain(closest_exp)
+                    puts, calls = chain.puts, chain.calls
                 except Exception:
                     continue
 
-            # Calculate Greeks from the raw JSON (zero Pandas overhead)
-            for target, ts in target_to_ts.items():
-                if ts not in loaded_chains:
-                    continue
-
-                opts = loaded_chains[ts]
-                exp_date = datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).date()
-                raw_exp_str = exp_date.strftime("%Y-%m-%d")
-                b_days = count_business_days(today, exp_date)
-                T = max(b_days, 1) / 252.0
+                T = max(actual_b_days, 1) / 252.0
                 r = 0.05
-
-                exp_short = exp_date.strftime("%b %d")
-                exp_stacked = f"{exp_short}<br><span class='text-[9px] text-slate-400 font-mono'>({b_days}d)</span>"
+                
+                exp_short = datetime.datetime.strptime(closest_exp, "%Y-%m-%d").strftime("%b %d")
+                exp_stacked = f"{exp_short}<br><span class='text-[9px] text-slate-400 font-mono'>({actual_b_days}d)</span>"
 
                 # Puts
                 best_put = None
                 min_p_diff = float("inf")
-                for row in opts.get("puts", []):
-                    try:
-                        K = float(row.get('strike', 0))
-                        iv = float(row.get('impliedVolatility', 0.5))
-                        if K <= 0: continue
-                        d = calc_put_delta(spot_price, K, T, r, sigma=iv)
-                        diff = abs(d - (-delta))
-                        if diff < min_p_diff:
-                            min_p_diff = diff
-                            best_put = (row, K, iv)
-                    except Exception:
-                        continue
+                for _, row in puts.iterrows():
+                    K, iv = row['strike'], row['impliedVolatility']
+                    d = calc_put_delta(spot_price, K, T, r, sigma=iv)
+                    if abs(d - (-delta)) < min_p_diff:
+                        min_p_diff = abs(d - (-delta))
+                        best_put = row
 
-                if best_put:
-                    row, k_val, iv_val = best_put
-                    bid_val = float(row.get('bid', 0))
-                    last_val = float(row.get('lastPrice', 0))
-                    prem = bid_val if bid_val > 0 else last_val
-                    yield_pct = (prem / k_val * 100) if k_val > 0 else 0
-                    ann_pct = yield_pct * 252 / b_days
-                    pct_diff = ((k_val - spot_price) / spot_price) * 100
-                    results_puts[str(target)][ticker] = {
-                        "raw_exp": raw_exp_str,
+                if best_put is not None:
+                    prem = best_put['bid'] if best_put['bid'] > 0 else best_put['lastPrice']
+                    yield_pct = (prem / best_put['strike'] * 100) if best_put['strike'] > 0 else 0
+                    ann_pct = yield_pct * 252 / actual_b_days
+                    pct_diff = ((best_put['strike'] - spot_price) / spot_price) * 100
+                    results_puts[target][ticker] = {
+                        "raw_exp": closest_exp,
                         "exp": exp_stacked,
-                        "strike": round(k_val, 2),
+                        "strike": round(best_put['strike'], 2),
                         "pct_diff": f"{pct_diff:+.1f}%",
-                        "iv": round(iv_val * 100, 1),
+                        "iv": round(best_put['impliedVolatility'] * 100, 1),
                         "prem": round(prem, 2),
-                        "ann": round(ann_pct, 1)
+                        "ann": round(ann_pct, 1),
+                        "is_safe": best_put['strike'] < market_data[ticker]["support"]
                     }
 
                 # Calls
                 best_call = None
                 min_c_diff = float("inf")
-                for row in opts.get("calls", []):
-                    try:
-                        K = float(row.get('strike', 0))
-                        iv = float(row.get('impliedVolatility', 0.5))
-                        if K <= 0: continue
-                        d = calc_call_delta(spot_price, K, T, r, sigma=iv)
-                        diff = abs(d - delta)
-                        if diff < min_c_diff:
-                            min_c_diff = diff
-                            best_call = (row, K, iv)
-                    except Exception:
-                        continue
+                for _, row in calls.iterrows():
+                    K, iv = row['strike'], row['impliedVolatility']
+                    d = calc_call_delta(spot_price, K, T, r, sigma=iv)
+                    if abs(d - delta) < min_c_diff:
+                        min_c_diff = abs(d - delta)
+                        best_call = row
 
-                if best_call:
-                    row, k_val, iv_val = best_call
-                    bid_val = float(row.get('bid', 0))
-                    last_val = float(row.get('lastPrice', 0))
-                    prem = bid_val if bid_val > 0 else last_val
+                if best_call is not None:
+                    prem = best_call['bid'] if best_call['bid'] > 0 else best_call['lastPrice']
                     yield_pct = (prem / spot_price * 100) if spot_price > 0 else 0
-                    ann_pct = yield_pct * 252 / b_days
-                    pct_diff = ((k_val - spot_price) / spot_price) * 100
-                    results_calls[str(target)][ticker] = {
-                        "raw_exp": raw_exp_str,
+                    ann_pct = yield_pct * 252 / actual_b_days
+                    pct_diff = ((best_call['strike'] - spot_price) / spot_price) * 100
+                    results_calls[target][ticker] = {
+                        "raw_exp": closest_exp,
                         "exp": exp_stacked,
-                        "strike": round(k_val, 2),
+                        "strike": round(best_call['strike'], 2),
                         "pct_diff": f"{pct_diff:+.1f}%",
-                        "iv": round(iv_val * 100, 1),
+                        "iv": round(best_call['impliedVolatility'] * 100, 1),
                         "prem": round(prem, 2),
-                        "ann": round(ann_pct, 1)
+                        "ann": round(ann_pct, 1),
+                        "is_safe": best_call['strike'] > market_data[ticker]["resistance"]
                     }
 
-        except Exception:
-            continue
-
-    result = {
+    return {
         "market": market_data,
         "puts": results_puts,
         "calls": results_calls,
         "tickers": list(market_data.keys()),
         "targets": target_periods
     }
-    DATA_CACHE[cache_key] = {"time": now, "data": result}
-    return result
 
 @app.get("/", response_class=HTMLResponse)
 def render_index():
