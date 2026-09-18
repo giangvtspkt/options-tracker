@@ -15,6 +15,12 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
 
+# Custom browser session to reduce throttling from Yahoo Finance
+YF_SESSION = requests.Session()
+YF_SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+})
+
 def norm_cdf(x):
     return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
 
@@ -45,14 +51,14 @@ def get_positions_from_github():
         "Authorization": f"token {GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3+json"
     }
-    r = requests.get(url, headers=headers)
-    if r.status_code == 200:
-        data = r.json()
-        content = base64.b64decode(data['content']).decode('utf-8')
-        try:
+    try:
+        r = requests.get(url, headers=headers, timeout=4)
+        if r.status_code == 200:
+            data = r.json()
+            content = base64.b64decode(data['content']).decode('utf-8')
             return json.loads(content), data.get('sha')
-        except:
-            return [], data.get('sha')
+    except Exception:
+        pass
     return [], None
 
 def save_positions_to_github(positions):
@@ -66,14 +72,14 @@ def save_positions_to_github(positions):
     _, sha = get_positions_from_github()
     content_str = json.dumps(positions, indent=2)
     encoded = base64.b64encode(content_str.encode('utf-8')).decode('utf-8')
-    payload = {
-        "message": "Update positions storage",
-        "content": encoded
-    }
+    payload = {"message": "Update positions storage", "content": encoded}
     if sha:
         payload["sha"] = sha
-    res = requests.put(url, headers=headers, json=payload)
-    return res.status_code in [200, 201]
+    try:
+        res = requests.put(url, headers=headers, json=payload, timeout=4)
+        return res.status_code in [200, 201]
+    except Exception:
+        return False
 
 class PositionModel(BaseModel):
     id: int
@@ -96,7 +102,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 </head>
 <body class="bg-slate-100 text-slate-800 p-2.5 sm:p-4 font-sans text-xs">
 
-  <!-- 1. Performance & Active Positions (Contract Table) -->
+  <!-- 1. Performance & Active Positions -->
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
     <div class="flex items-center justify-between mb-2">
       <h2 class="text-xs font-bold text-slate-800 flex items-center gap-1">
@@ -197,7 +203,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Contract Positions Table with Direct Inline Editing -->
+    <!-- Contract Positions Table -->
     <div class="overflow-x-auto border border-slate-200 rounded-lg">
       <table class="w-full text-left text-[10px]">
         <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold">
@@ -219,7 +225,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- 2. Tickers & Delta Box (Moved Below Contract Table) -->
+  <!-- 2. Tickers & Delta Box (Below Contract Table) -->
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
     <div class="grid grid-cols-2 gap-2 mb-2">
       <div>
@@ -231,8 +237,9 @@ HTML_CONTENT = """<!DOCTYPE html>
         <input id="delta" type="number" step="0.01" value="0.2" class="w-full border rounded p-2 text-sm font-semibold">
       </div>
     </div>
-    <button onclick="fetchData()" id="refreshBtn" class="bg-blue-600 active:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg text-sm w-full mt-1">
-      Refresh Data
+    <button onclick="fetchData()" id="refreshBtn" class="bg-blue-600 active:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg text-sm w-full mt-1 flex items-center justify-center gap-2">
+      <span id="btnSpinner" class="hidden animate-spin h-3.5 w-3.5 border-2 border-white border-t-transparent rounded-full"></span>
+      <span id="btnText">Refresh Data</span>
     </button>
     <div id="status" class="text-[11px] text-slate-500 mt-1.5 text-right font-medium">Ready</div>
   </div>
@@ -258,7 +265,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           </tr>
         </thead>
         <tbody id="levelsBody">
-          <tr><td colspan="8" class="p-3 text-center text-slate-400">Loading market levels...</td></tr>
+          <tr><td colspan="8" class="p-3 text-center text-slate-400">Ready to load quotes...</td></tr>
         </tbody>
       </table>
     </div>
@@ -277,7 +284,9 @@ HTML_CONTENT = """<!DOCTYPE html>
     </h2>
     <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
       <table class="w-full text-left" id="putsTable">
-        <tbody id="putsBody"></tbody>
+        <tbody id="putsBody">
+          <tr><td class="p-4 text-center text-slate-400">Click 'Refresh Data' to load options.</td></tr>
+        </tbody>
       </table>
     </div>
   </div>
@@ -289,7 +298,9 @@ HTML_CONTENT = """<!DOCTYPE html>
     </h2>
     <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
       <table class="w-full text-left" id="callsTable">
-        <tbody id="callsBody"></tbody>
+        <tbody id="callsBody">
+          <tr><td class="p-4 text-center text-slate-400">Click 'Refresh Data' to load options.</td></tr>
+        </tbody>
       </table>
     </div>
   </div>
@@ -298,6 +309,8 @@ HTML_CONTENT = """<!DOCTYPE html>
     let globalData = null;
     let selectedTicker = 'ALL';
     let cloudPositions = [];
+    let progressTimer = null;
+    let elapsedSeconds = 0;
 
     const EXP_COLOR_PALETTE = [
       'bg-indigo-50/80',
@@ -554,18 +567,58 @@ HTML_CONTENT = """<!DOCTYPE html>
       document.getElementById('totalUnrealized').innerText = fmt(totalUnrealized);
     }
 
+    function renderLoadingSkeleton() {
+      const loaderHtml = `
+        <tr>
+          <td class="p-4 text-center text-slate-500 animate-pulse bg-slate-50">
+            <div class="inline-flex items-center gap-2 font-semibold">
+              <span class="animate-spin h-3.5 w-3.5 border-2 border-blue-600 border-t-transparent rounded-full"></span>
+              <span>Fetching options chain from Yahoo Finance...</span>
+            </div>
+            <div class="text-[10px] text-slate-400 mt-1">If yfinance takes more than 10 seconds, please wait as it checks each date.</div>
+          </td>
+        </tr>
+      `;
+      document.getElementById('putsBody').innerHTML = loaderHtml;
+      document.getElementById('callsBody').innerHTML = loaderHtml;
+      document.getElementById('levelsBody').innerHTML = `
+        <tr><td colspan="8" class="p-3 text-center text-slate-500 animate-pulse">Calculating spot &amp; pivot levels...</td></tr>
+      `;
+    }
+
     async function fetchData() {
       const btn = document.getElementById('refreshBtn');
+      const spinner = document.getElementById('btnSpinner');
+      const btnText = document.getElementById('btnText');
       const status = document.getElementById('status');
+
       btn.disabled = true;
-      status.innerText = "Fetching live quotes...";
+      spinner.classList.remove('hidden');
+      btnText.innerText = "Loading...";
+
+      renderLoadingSkeleton();
+
+      elapsedSeconds = 0;
+      clearInterval(progressTimer);
+      progressTimer = setInterval(() => {
+        elapsedSeconds++;
+        if (elapsedSeconds < 10) {
+          status.innerText = `⏳ Contacting Yahoo Finance (${elapsedSeconds}s)...`;
+        } else if (elapsedSeconds < 25) {
+          status.innerText = `⏳ Yahoo Finance is responding slowly (${elapsedSeconds}s elapsed)...`;
+        } else {
+          status.innerText = `⚠️ Still waiting on Yahoo Finance (${elapsedSeconds}s) - Render CPU may be processing...`;
+        }
+      }, 1000);
 
       const tickers = document.getElementById('tickers').value;
       const delta = document.getElementById('delta').value;
 
       try {
         const res = await fetch(`/api/data?tickers=${encodeURIComponent(tickers)}&delta=${delta}`);
-        if (!res.ok) throw new Error("API error");
+        clearInterval(progressTimer);
+
+        if (!res.ok) throw new Error("API error " + res.status);
         globalData = await res.json();
 
         renderLevelsTable(globalData.market);
@@ -573,11 +626,16 @@ HTML_CONTENT = """<!DOCTYPE html>
         renderBothTables();
         renderPositionsAndPL();
 
-        status.innerText = "Updated: " + new Date().toLocaleTimeString();
+        status.innerHTML = `<span class="text-emerald-600 font-bold">✓ Updated</span> at ${new Date().toLocaleTimeString()} (${elapsedSeconds}s)`;
       } catch (err) {
-        status.innerText = "Fetch error";
+        clearInterval(progressTimer);
+        status.innerHTML = `<span class="text-rose-600 font-bold">✕ Yahoo Finance did not respond in time.</span> Please retry.`;
+        document.getElementById('putsBody').innerHTML = `<tr><td class="p-3 text-center text-rose-500">Could not load Put chain. Tap 'Refresh Data' to try again.</td></tr>`;
+        document.getElementById('callsBody').innerHTML = `<tr><td class="p-3 text-center text-rose-500">Could not load Call chain. Tap 'Refresh Data' to try again.</td></tr>`;
       } finally {
         btn.disabled = false;
+        spinner.classList.add('hidden');
+        btnText.innerText = "Refresh Data";
       }
     }
 
@@ -602,9 +660,9 @@ HTML_CONTENT = """<!DOCTYPE html>
     function renderLevelsTable(market) {
       const tbody = document.getElementById('levelsBody');
       tbody.innerHTML = '';
-      const entries = Object.entries(market);
+      const entries = Object.entries(market || {});
       if (entries.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" class="p-3 text-center text-slate-400">No ticker data available.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8" class="p-3 text-center text-slate-400">No ticker data returned.</td></tr>`;
         return;
       }
       entries.forEach(([ticker, m]) => {
@@ -753,8 +811,8 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
     results_calls = {t: {} for t in target_periods}
 
     for ticker in ticker_list:
-        tkr = yf.Ticker(ticker)
         try:
+            tkr = yf.Ticker(ticker, session=YF_SESSION)
             spot_price = tkr.fast_info.get("lastPrice", 0)
             expirations = tkr.options
             df_hist = tkr.history(period="30d")
