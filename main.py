@@ -84,6 +84,7 @@ class PositionModel(BaseModel):
     prem: float
     qty: int
     exp: str
+    trade_date: str = ""
 
 HTML_CONTENT = """<!DOCTYPE html>
 <html lang="en">
@@ -111,7 +112,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     <div id="status" class="text-[11px] text-slate-500 mt-1.5 text-right font-medium">Ready</div>
   </div>
 
-  <!-- Performance & Positions Box -->
+  <!-- Performance & Active Positions Box -->
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
     <div class="flex items-center justify-between mb-2">
       <h2 class="text-xs font-bold text-slate-800 flex items-center gap-1">
@@ -146,6 +147,18 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- Open Contracts Summary by Ticker -->
+    <div class="bg-slate-50 border border-slate-200 rounded-lg p-2.5 mb-3">
+      <div class="text-[11px] font-bold text-slate-600 mb-1.5 flex items-center justify-between">
+        <span>📊 Open Contracts per Ticker</span>
+        <span id="totalOpenQty" class="text-[10px] font-semibold text-slate-500">Total Open: 0</span>
+      </div>
+      <div id="openSummaryCards" class="flex flex-wrap gap-2">
+        <span class="text-slate-400 text-[10px]">No active open contracts.</span>
+      </div>
+    </div>
+
+    <!-- Add Position Form -->
     <div id="positionForm" class="hidden bg-slate-50 p-2.5 rounded-lg border border-slate-200 mb-3 space-y-2">
       <div class="grid grid-cols-3 gap-2">
         <div>
@@ -183,9 +196,15 @@ HTML_CONTENT = """<!DOCTYPE html>
         </div>
       </div>
 
-      <div>
-        <label class="text-[10px] font-bold text-slate-500">Expiration Date</label>
-        <input id="posExp" type="date" class="w-full border rounded p-1.5 text-xs bg-white">
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <label class="text-[10px] font-bold text-slate-500">Trade Day (Buy/Sell Day)</label>
+          <input id="posTradeDate" type="date" class="w-full border rounded p-1.5 text-xs bg-white">
+        </div>
+        <div>
+          <label class="text-[10px] font-bold text-slate-500">Expiration Date</label>
+          <input id="posExp" type="date" class="w-full border rounded p-1.5 text-xs bg-white">
+        </div>
       </div>
 
       <div class="flex gap-2 pt-1">
@@ -194,21 +213,23 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- Contract Positions Table with Direct Inline Editing -->
     <div class="overflow-x-auto border border-slate-200 rounded-lg">
       <table class="w-full text-left text-[10px]">
         <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold">
           <tr>
             <th class="p-1.5 border-r">Pos</th>
             <th class="p-1.5 border-r">Contract</th>
+            <th class="p-1.5 border-r">Trade Day ✎</th>
             <th class="p-1.5 border-r">Exp ▲</th>
-            <th class="p-1.5 border-r">Prem</th>
+            <th class="p-1.5 border-r">Prem ($)</th>
             <th class="p-1.5 border-r">P/L ($)</th>
             <th class="p-1.5 border-r">Status</th>
             <th class="p-1.5 text-center">Delete</th>
           </tr>
         </thead>
         <tbody id="positionsBody">
-          <tr><td colspan="7" class="p-2 text-center text-slate-400">Loading positions...</td></tr>
+          <tr><td colspan="8" class="p-2 text-center text-slate-400">Loading positions...</td></tr>
         </tbody>
       </table>
     </div>
@@ -292,7 +313,11 @@ HTML_CONTENT = """<!DOCTYPE html>
     }
 
     function toggleAddForm() {
-      document.getElementById('positionForm').classList.toggle('hidden');
+      const f = document.getElementById('positionForm');
+      f.classList.toggle('hidden');
+      if (!f.classList.contains('hidden') && !document.getElementById('posTradeDate').value) {
+        document.getElementById('posTradeDate').value = new Date().toISOString().split('T')[0];
+      }
     }
 
     async function loadCloudPositions() {
@@ -301,7 +326,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         cloudPositions = await res.json();
         renderPositionsAndPL();
       } catch (e) {
-        document.getElementById('positionsBody').innerHTML = '<tr><td colspan="7" class="p-2 text-center text-slate-400">No active positions saved.</td></tr>';
+        document.getElementById('positionsBody').innerHTML = '<tr><td colspan="8" class="p-2 text-center text-slate-400">No active positions saved.</td></tr>';
       }
     }
 
@@ -313,6 +338,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       const prem = parseFloat(document.getElementById('posPrem').value);
       const qty = parseInt(document.getElementById('posQty').value) || 1;
       const exp = document.getElementById('posExp').value;
+      const trade_date = document.getElementById('posTradeDate').value || new Date().toISOString().split('T')[0];
 
       if (!ticker || isNaN(strike) || isNaN(prem) || !exp) {
         alert('Please fill all fields properly.');
@@ -322,7 +348,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       const res = await fetch('/api/positions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: Date.now(), action, type, ticker, strike, prem, qty, exp })
+        body: JSON.stringify({ id: Date.now(), action, type, ticker, strike, prem, qty, exp, trade_date })
       });
 
       if (res.ok) {
@@ -330,6 +356,32 @@ HTML_CONTENT = """<!DOCTYPE html>
         loadCloudPositions();
       } else {
         alert('Could not save to GitHub. Check environment variables.');
+      }
+    }
+
+    // Direct inline field update saved straight to GitHub
+    async function updatePositionField(id, field, value) {
+      const targetPos = cloudPositions.find(p => p.id === id);
+      if (!targetPos) return;
+
+      if (field === 'strike' || field === 'prem') {
+        targetPos[field] = parseFloat(value) || 0;
+      } else if (field === 'qty') {
+        targetPos[field] = parseInt(value) || 1;
+      } else {
+        targetPos[field] = value;
+      }
+
+      const res = await fetch(`/api/positions/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(targetPos)
+      });
+
+      if (res.ok) {
+        renderPositionsAndPL();
+      } else {
+        alert('Failed to update field on GitHub.');
       }
     }
 
@@ -369,8 +421,49 @@ HTML_CONTENT = """<!DOCTYPE html>
         return a.ticker.localeCompare(b.ticker);
       });
 
+      const todayStr = now.toISOString().split('T')[0];
+
+      // Ticker Open Contracts aggregation
+      const openStats = {};
+      let totalOpenCount = 0;
+
+      cloudPositions.forEach(p => {
+        const isExpired = p.exp < todayStr;
+        if (!isExpired) {
+          totalOpenCount += p.qty;
+          if (!openStats[p.ticker]) {
+            openStats[p.ticker] = { total: 0, puts: 0, calls: 0 };
+          }
+          openStats[p.ticker].total += p.qty;
+          if (p.type === 'PUT') openStats[p.ticker].puts += p.qty;
+          else if (p.type === 'CALL') openStats[p.ticker].calls += p.qty;
+        }
+      });
+
+      // Render Open Contracts Summary Cards
+      const summaryContainer = document.getElementById('openSummaryCards');
+      document.getElementById('totalOpenQty').innerText = `Total Open: ${totalOpenCount} contracts`;
+      const openTickers = Object.keys(openStats);
+
+      if (openTickers.length === 0) {
+        summaryContainer.innerHTML = '<span class="text-slate-400 text-[10px]">No active open contracts.</span>';
+      } else {
+        summaryContainer.innerHTML = '';
+        openTickers.forEach(t => {
+          const s = openStats[t];
+          const card = document.createElement('div');
+          card.className = "bg-white border border-slate-200 rounded px-2.5 py-1 text-[10px] flex items-center gap-2 shadow-xs";
+          card.innerHTML = `
+            <span class="font-bold text-slate-800">${t}:</span>
+            <span class="font-extrabold text-blue-700">${s.total}</span>
+            <span class="text-[9px] text-slate-400 font-mono">(${s.puts}P / ${s.calls}C)</span>
+          `;
+          summaryContainer.appendChild(card);
+        });
+      }
+
       if (filteredPositions.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="p-2 text-center text-slate-400">No active positions for this month.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="p-2 text-center text-slate-400">No active positions for this month.</td></tr>';
         document.getElementById('totalRealized').innerText = "$0.00";
         document.getElementById('lastMonthRealized').innerText = "$0.00";
         document.getElementById('thisMonthRealized').innerText = "$0.00";
@@ -380,7 +473,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
 
       tbody.innerHTML = '';
-      const todayStr = now.toISOString().split('T')[0];
       let totalRealized = 0, thisMonthRealized = 0, lastMonthRealized = 0, thisMonthUnrealized = 0, totalUnrealized = 0;
       const posColorMap = {};
 
@@ -430,11 +522,18 @@ HTML_CONTENT = """<!DOCTYPE html>
           : '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">BUY</span>';
 
         const rowBg = getExpColor(p.exp, posColorMap);
+        const curTradeDate = p.trade_date || '';
+
         const tr = document.createElement('tr');
         tr.className = `border-b ${rowBg}`;
         tr.innerHTML = `
           <td class="p-1.5 border-r whitespace-nowrap">${actionBadge}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-bold">${p.ticker} $${p.strike} ${p.type} (x${p.qty})</td>
+          <td class="p-1 border-r whitespace-nowrap">
+            <input type="date" value="${curTradeDate}"
+              onchange="updatePositionField(${p.id}, 'trade_date', this.value)"
+              class="border rounded px-1 py-0.5 bg-white font-mono text-[9px] text-slate-700">
+          </td>
           <td class="p-1.5 border-r whitespace-nowrap text-slate-700 font-mono font-bold">${p.exp}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono font-bold ${plColor}">${plDisplay}</td>
@@ -618,6 +717,22 @@ def create_position(pos: PositionModel):
         raise HTTPException(status_code=500, detail="Failed to save to GitHub")
     return {"status": "success"}
 
+@app.put("/api/positions/{pos_id}")
+def update_position(pos_id: int, updated: PositionModel):
+    positions, _ = get_positions_from_github()
+    found = False
+    for i, p in enumerate(positions):
+        if p.get("id") == pos_id:
+            positions[i] = updated.model_dump()
+            found = True
+            break
+    if not found:
+        raise HTTPException(status_code=404, detail="Position not found")
+    success = save_positions_to_github(positions)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to update GitHub")
+    return {"status": "success"}
+
 @app.delete("/api/positions/{pos_id}")
 def remove_position(pos_id: int):
     positions, _ = get_positions_from_github()
@@ -630,7 +745,6 @@ def remove_position(pos_id: int):
 @app.get("/api/data")
 def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.15):
     ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
-    # Updated target periods: removed 60 and 90, changed 45 to 21
     target_periods = [7, 14, 21, 30]
     today = datetime.date.today()
     
