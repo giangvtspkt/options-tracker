@@ -104,6 +104,14 @@ HTML_CONTENT = """<!DOCTYPE html>
 </head>
 <body class="bg-slate-100 text-slate-800 p-2.5 sm:p-4 font-sans text-xs">
 
+  <!-- Diagnostic Alert Banner -->
+  <div id="diagBanner" class="hidden bg-amber-50 border border-amber-300 rounded-xl p-3 mb-3 text-amber-900">
+    <div class="font-bold flex items-center gap-1.5 text-xs mb-1">
+      <span>⚠️</span> System Notice: Option Chain Data Incomplete
+    </div>
+    <ul id="diagList" class="list-disc list-inside space-y-0.5 text-[11px] text-amber-800"></ul>
+  </div>
+
   <!-- 1. Performance & Active Positions -->
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
@@ -586,7 +594,6 @@ HTML_CONTENT = """<!DOCTYPE html>
           }
           currentUnrealized += currentPl;
 
-          // Rolling Alert Logic
           if (p.action === 'SELL' && spot !== null && spot !== undefined) {
             const pctFromStrike = ((spot - p.strike) / p.strike) * 100;
 
@@ -674,7 +681,7 @@ HTML_CONTENT = """<!DOCTYPE html>
               <span class="animate-spin h-3.5 w-3.5 border-2 border-blue-600 border-t-transparent rounded-full"></span>
               <span>Fetching options chain from Yahoo Finance...</span>
             </div>
-            <div class="text-[10px] text-slate-400 mt-1">Checking available contracts...</div>
+            <div class="text-[10px] text-slate-400 mt-1">Downloading real-time bid/ask chains...</div>
           </td>
         </tr>
       `;
@@ -683,6 +690,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       document.getElementById('levelsBody').innerHTML = `
         <tr><td colspan="8" class="p-3 text-center text-slate-500 animate-pulse">Calculating spot &amp; pivot levels...</td></tr>
       `;
+      document.getElementById('diagBanner').classList.add('hidden');
     }
 
     async function fetchData() {
@@ -714,6 +722,21 @@ HTML_CONTENT = """<!DOCTYPE html>
         if (!res.ok) throw new Error("API error " + res.status);
         globalData = await res.json();
 
+        // Render diagnostics banner if any ticker encountered an issue
+        const diagBanner = document.getElementById('diagBanner');
+        const diagList = document.getElementById('diagList');
+        diagList.innerHTML = '';
+        if (globalData.diagnostics && Object.keys(globalData.diagnostics).length > 0) {
+          diagBanner.classList.remove('hidden');
+          Object.entries(globalData.diagnostics).forEach(([tkr, msg]) => {
+            const li = document.createElement('li');
+            li.innerHTML = `<span class="font-bold">${tkr}:</span> ${msg}`;
+            diagList.appendChild(li);
+          });
+        } else {
+          diagBanner.classList.add('hidden');
+        }
+
         renderLevelsTable(globalData.market);
         renderPills(globalData.tickers);
         renderBothTables();
@@ -723,8 +746,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       } catch (err) {
         clearInterval(progressTimer);
         status.innerHTML = `<span class="text-rose-600 font-bold">✕ Yahoo Finance did not respond.</span> Please retry.`;
-        document.getElementById('putsBody').innerHTML = `<tr><td class="p-3 text-center text-rose-500">Could not load Put chain. Tap 'Refresh Data' to try again.</td></tr>`;
-        document.getElementById('callsBody').innerHTML = `<tr><td class="p-3 text-center text-rose-500">Could not load Call chain. Tap 'Refresh Data' to try again.</td></tr>`;
+        document.getElementById('putsBody').innerHTML = `<tr><td class="p-3 text-center text-rose-500 font-semibold">Failed to load Put chain: Network or rate limit issue.</td></tr>`;
+        document.getElementById('callsBody').innerHTML = `<tr><td class="p-3 text-center text-rose-500 font-semibold">Failed to load Call chain: Network or rate limit issue.</td></tr>`;
       } finally {
         btn.disabled = false;
         spinner.classList.add('hidden');
@@ -755,7 +778,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       tbody.innerHTML = '';
       const entries = Object.entries(market || {});
       if (entries.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" class="p-3 text-center text-slate-400">No ticker data returned.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8" class="p-3 text-center text-rose-500 font-semibold">No ticker quotes returned. Check the Diagnostic Notice above.</td></tr>`;
         return;
       }
       entries.forEach(([ticker, m]) => {
@@ -778,13 +801,19 @@ HTML_CONTENT = """<!DOCTYPE html>
     function renderBothTables() {
       if (!globalData) return;
       const displayTickers = selectedTicker === 'ALL' ? globalData.tickers : [selectedTicker];
-      renderTable('putsBody', globalData.puts, displayTickers, globalData.targets);
-      renderTable('callsBody', globalData.calls, displayTickers, globalData.targets);
+      renderTable('putsBody', globalData.puts, displayTickers, globalData.targets, 'Put');
+      renderTable('callsBody', globalData.calls, displayTickers, globalData.targets, 'Call');
     }
 
-    function renderTable(elementId, results, tickers, targets) {
+    function renderTable(elementId, results, tickers, targets, tableType) {
       const tbody = document.getElementById(elementId);
       tbody.innerHTML = '';
+
+      if (!tickers || tickers.length === 0) {
+        tbody.innerHTML = `<tr><td class="p-4 text-center text-slate-400">No active tickers found. Ensure symbols are valid (e.g. IREN, RKLB).</td></tr>`;
+        return;
+      }
+
       const tickerColors = [
         { header: 'bg-slate-700 text-white', sub: 'bg-slate-100 text-slate-700' },
         { header: 'bg-indigo-900 text-white', sub: 'bg-indigo-50 text-indigo-950' },
@@ -811,10 +840,11 @@ HTML_CONTENT = """<!DOCTYPE html>
       tbody.innerHTML += headHtml;
 
       const tableColorMap = {};
+      let totalContractsPopulated = 0;
+
       targets.forEach(tgt => {
         const isSweetSpot = (tgt === 21 || tgt === 30);
         const badge = isSweetSpot ? '★ ' : '';
-
         const targetDict = (results && (results[tgt] || results[String(tgt)])) || {};
 
         let rowExpKey = '';
@@ -831,6 +861,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         tickers.forEach(t => {
           const item = targetDict[t];
           if (item) {
+            totalContractsPopulated++;
             const strikeBg = item.is_safe ? 'bg-green-200 text-green-900 font-bold' : '';
             rowHtml += `
               <td class="p-1 border-r text-center leading-tight text-[10px] text-slate-700">${item.exp}</td>
@@ -840,12 +871,25 @@ HTML_CONTENT = """<!DOCTYPE html>
               <td class="p-1.5 border-r-2 border-r-slate-400 whitespace-nowrap text-emerald-700 font-bold">${item.ann}%</td>
             `;
           } else {
-            rowHtml += `<td class="p-1.5 border-r-2 border-r-slate-400 text-center text-slate-400" colspan="5">-</td>`;
+            const reason = (globalData.diagnostics && globalData.diagnostics[`${t}_${tgt}d_${tableType}`]) 
+              ? globalData.diagnostics[`${t}_${tgt}d_${tableType}`] 
+              : 'No strike match';
+            rowHtml += `<td class="p-1.5 border-r-2 border-r-slate-400 text-center text-slate-400 text-[9px]" colspan="5">${reason}</td>`;
           }
         });
         rowHtml += `</tr>`;
         tbody.innerHTML += rowHtml;
       });
+
+      if (totalContractsPopulated === 0) {
+        tbody.innerHTML += `
+          <tr>
+            <td colspan="${1 + tickers.length * 5}" class="p-2.5 bg-amber-50 text-amber-800 text-center text-[10px]">
+              No ${tableType} contracts matched the target delta or business-day windows. Refer to the diagnostic banner above for details.
+            </td>
+          </tr>
+        `;
+      }
     }
 
     loadCloudPositions();
@@ -912,13 +956,13 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
     results_puts = {str(t): {} for t in target_periods}
     results_calls = {str(t): {} for t in target_periods}
     live_positions = {}
+    diagnostics = {}
 
     for ticker in ticker_list:
         try:
             tkr = yf.Ticker(ticker)
             spot_price = 0.0
 
-            # Safe multi-fallback spot extraction
             try:
                 if hasattr(tkr, 'fast_info'):
                     spot_price = float(tkr.fast_info.get('last_price') or tkr.fast_info.get('lastPrice') or 0.0)
@@ -930,12 +974,18 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
                 if not hist_1d.empty:
                     spot_price = float(hist_1d['Close'].iloc[-1])
 
-            expirations = list(tkr.options) if tkr.options else []
-            df_hist = tkr.history(period="30d")
-        except Exception:
-            continue
+            if not spot_price or spot_price <= 0:
+                diagnostics[ticker] = "Could not fetch spot price (Yahoo Finance returned $0.00)"
+                continue
 
-        if not expirations or spot_price <= 0:
+            expirations = list(tkr.options) if tkr.options else []
+            if not expirations:
+                diagnostics[ticker] = f"No option expiration dates returned by Yahoo Finance for spot ${spot_price:.2f}"
+                continue
+
+            df_hist = tkr.history(period="30d")
+        except Exception as e:
+            diagnostics[ticker] = f"Connection error reading Yahoo Finance: {str(e)}"
             continue
 
         if not df_hist.empty and len(df_hist) >= 2:
@@ -978,6 +1028,8 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
                     closest_exp = exp
             if closest_exp:
                 target_to_exp[target] = closest_exp
+            else:
+                diagnostics[f"{ticker}_{target}d"] = f"No future expiration found close to {target} days"
 
         needed_exps = set(target_to_exp.values())
         for p in positions:
@@ -988,7 +1040,8 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
         for exp in needed_exps:
             try:
                 loaded_chains[exp] = tkr.option_chain(exp)
-            except Exception:
+            except Exception as e:
+                diagnostics[f"{ticker}_{exp}"] = f"Failed to download option chain: {str(e)}"
                 continue
 
         for p in positions:
@@ -1007,6 +1060,8 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
 
         for target, exp in target_to_exp.items():
             if exp not in loaded_chains:
+                diagnostics[f"{ticker}_{target}d_Put"] = f"Option chain missing for {exp}"
+                diagnostics[f"{ticker}_{target}d_Call"] = f"Option chain missing for {exp}"
                 continue
 
             chain = loaded_chains[exp]
@@ -1054,6 +1109,10 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
                         "ann": round(ann_pct, 1),
                         "is_safe": k_val < market_data[ticker]["support"]
                     }
+                else:
+                    diagnostics[f"{ticker}_{target}d_Put"] = f"No strike reached delta {-delta}"
+            else:
+                diagnostics[f"{ticker}_{target}d_Put"] = f"Put table empty from Yahoo for {exp}"
 
             # Calls
             if calls is not None and not calls.empty:
@@ -1089,6 +1148,10 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
                         "ann": round(ann_pct, 1),
                         "is_safe": k_val > market_data[ticker]["resistance"]
                     }
+                else:
+                    diagnostics[f"{ticker}_{target}d_Call"] = f"No strike reached delta {delta}"
+            else:
+                diagnostics[f"{ticker}_{target}d_Call"] = f"Call table empty from Yahoo for {exp}"
 
     return {
         "market": market_data,
@@ -1096,7 +1159,8 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
         "calls": results_calls,
         "tickers": list(market_data.keys()),
         "targets": target_periods,
-        "live_positions": live_positions
+        "live_positions": live_positions,
+        "diagnostics": diagnostics
     }
 
 @app.get("/", response_class=HTMLResponse)
