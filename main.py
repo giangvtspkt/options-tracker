@@ -535,7 +535,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         const isThisMonth = (pYear === currentYear && pMonth === currentMonth);
         const spot = (globalData && globalData.market && globalData.market[p.ticker]) ? globalData.market[p.ticker].spot : null;
 
-        // Fetch live quote mark if available from backend
         const contractKey = `${p.ticker}_${p.exp}_${p.strike}_${p.type}`;
         const liveMark = (globalData && globalData.live_positions && globalData.live_positions[contractKey] !== undefined)
           ? globalData.live_positions[contractKey]
@@ -547,13 +546,19 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         if (isExpired) {
           if (p.action === 'SELL') {
-            if ((p.type === 'PUT' && (!spot || spot >= p.strike)) || (p.type === 'CALL' && (!spot || spot <= p.strike))) {
-              maxPl = p.prem * 100 * p.qty;
-              statusHtml = '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">Expired (Win)</span>';
+            if (spot !== null && spot !== undefined) {
+              const isWin = (p.type === 'PUT' && spot >= p.strike) || (p.type === 'CALL' && spot <= p.strike);
+              if (isWin) {
+                maxPl = p.prem * 100 * p.qty;
+                statusHtml = '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">Expired (Win)</span>';
+              } else {
+                const intrinsic = p.type === 'PUT' ? Math.max(p.strike - spot, 0) : Math.max(spot - p.strike, 0);
+                maxPl = (p.prem - intrinsic) * 100 * p.qty;
+                statusHtml = '<span class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">Assigned</span>';
+              }
             } else {
-              const intrinsic = p.type === 'PUT' ? Math.max(p.strike - spot, 0) : Math.max(spot - p.strike, 0);
-              maxPl = (p.prem - intrinsic) * 100 * p.qty;
-              statusHtml = '<span class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">Assigned</span>';
+              maxPl = p.prem * 100 * p.qty;
+              statusHtml = '<span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-bold">Expired</span>';
             }
           } else {
             const intrinsic = p.type === 'CALL' ? Math.max((spot || 0) - p.strike, 0) : Math.max(p.strike - (spot || 0), 0);
@@ -561,19 +566,16 @@ HTML_CONTENT = """<!DOCTYPE html>
             statusHtml = '<span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-bold">Closed</span>';
           }
 
-          currentPl = maxPl; // On expiration, current P&L matches final realized P&L
+          currentPl = maxPl;
           totalRealized += maxPl;
           if (isThisMonth) thisMonthRealized += maxPl;
           else if (pYear === lastMonthYear && pMonth === lastMonth) lastMonthRealized += maxPl;
         } else {
-          // Open position: Max P&L is full initial collected premium
           maxPl = (p.action === 'SELL') ? (p.prem * 100 * p.qty) : (-p.prem * 100 * p.qty);
           totalMaxUnrealized += maxPl;
 
-          // Mark-to-market Current P&L calculation
           if (liveMark !== null) {
             if (p.action === 'SELL') {
-              // Sold option: Profit = Entry Premium - Current Cost to Buy Back
               currentPl = (p.prem - liveMark) * 100 * p.qty;
             } else {
               currentPl = (liveMark - p.prem) * 100 * p.qty;
@@ -873,7 +875,6 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
     positions, _ = get_positions_from_github()
     ticker_set = set(t.strip().upper() for t in tickers.split(",") if t.strip())
 
-    # Include tickers from active positions so live quotes can be calculated
     today = datetime.date.today()
     for p in positions:
         if p.get("exp", "") >= str(today) and p.get("ticker"):
@@ -927,7 +928,6 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
             "resistance": round(max(r1, rolling_resistance), 2)
         }
 
-        # Identify unique expirations needed for tracker targets and active positions
         target_to_exp = {}
         for target in target_periods:
             closest_exp = None
@@ -946,7 +946,6 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
             if closest_exp:
                 target_to_exp[target] = closest_exp
 
-        # Collect expirations from active open positions for this ticker
         needed_exps = set(target_to_exp.values())
         for p in positions:
             if p.get("ticker", "").upper() == ticker and p.get("exp") in expirations:
@@ -959,18 +958,14 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
             except Exception:
                 continue
 
-        # Look up live market marks for open positions
         for p in positions:
             if p.get("ticker", "").upper() == ticker and p.get("exp") in loaded_chains:
                 chain = loaded_chains[p["exp"]]
                 df_opts = chain.puts if p.get("type") == "PUT" else chain.calls
                 k_target = float(p.get("strike", 0))
-                
-                # Match strike
                 match = df_opts[abs(df_opts["strike"] - k_target) < 0.01]
                 if not match.empty:
                     row_data = match.iloc[0]
-                    # Mark to market: use ask price (cost to buy back) or lastPrice
                     ask = float(row_data.get("ask", 0))
                     last_p = float(row_data.get("lastPrice", 0))
                     mark = ask if ask > 0 else last_p
@@ -1049,7 +1044,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
                     prem = bid if bid > 0 else last_p
                     yield_pct = (prem / spot_price * 100) if spot_price > 0 else 0
                     ann_pct = yield_pct * 252 / actual_b_days
-                    pct_diff = ((k_val - spot_price) / spot_price) * 100
+                    pct_diff = ((best_call['strike'] - spot_price) / spot_price) * 100
 
                     results_calls[str(target)][ticker] = {
                         "raw_exp": exp,
