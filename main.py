@@ -15,16 +15,12 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
 
-YF_SESSION = requests.Session()
-YF_SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-})
-
 def norm_cdf(x):
     return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
 
 def calc_put_delta(S, K, T, r, sigma):
-    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0.0
+    if T <= 0 or S <= 0 or K <= 0: return 0.0
+    if not sigma or math.isnan(sigma) or sigma <= 0.001: sigma = 0.45
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
         return norm_cdf(d1) - 1.0
@@ -32,7 +28,8 @@ def calc_put_delta(S, K, T, r, sigma):
         return 0.0
 
 def calc_call_delta(S, K, T, r, sigma):
-    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0.0
+    if T <= 0 or S <= 0 or K <= 0: return 0.0
+    if not sigma or math.isnan(sigma) or sigma <= 0.001: sigma = 0.45
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
         return norm_cdf(d1)
@@ -217,7 +214,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Contract Positions Table with Live Rolling Alerts -->
+    <!-- Contract Positions Table -->
     <div class="overflow-x-auto border border-slate-200 rounded-lg">
       <table class="w-full text-left text-[10px]">
         <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold">
@@ -540,7 +537,6 @@ HTML_CONTENT = """<!DOCTYPE html>
           ? globalData.live_positions[contractKey]
           : null;
 
-        // Calculate DTE
         const expDate = new Date(p.exp);
         const diffTime = expDate - new Date(todayStr);
         const dte = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
@@ -919,14 +915,22 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
 
     for ticker in ticker_list:
         try:
-            tkr = yf.Ticker(ticker, session=YF_SESSION)
-            spot_price = tkr.fast_info.get("lastPrice", 0)
+            tkr = yf.Ticker(ticker)
+            spot_price = 0.0
+
+            # Safe multi-fallback spot extraction
+            try:
+                if hasattr(tkr, 'fast_info'):
+                    spot_price = float(tkr.fast_info.get('last_price') or tkr.fast_info.get('lastPrice') or 0.0)
+            except Exception:
+                pass
+
             if not spot_price or spot_price <= 0:
-                hist_1d = tkr.history(period="1d")
+                hist_1d = tkr.history(period="5d")
                 if not hist_1d.empty:
                     spot_price = float(hist_1d['Close'].iloc[-1])
 
-            expirations = list(tkr.options)
+            expirations = list(tkr.options) if tkr.options else []
             df_hist = tkr.history(period="30d")
         except Exception:
             continue
@@ -1023,7 +1027,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
                 for _, row in puts.iterrows():
                     try:
                         K = float(row['strike'])
-                        iv = float(row['impliedVolatility']) if ('impliedVolatility' in row and not math.isnan(row['impliedVolatility'])) else 0.5
+                        iv = float(row.get('impliedVolatility', 0.45))
                         d = calc_put_delta(spot_price, K, T, r, sigma=iv)
                         if abs(d - (-delta)) < min_p_diff:
                             min_p_diff = abs(d - (-delta))
@@ -1045,7 +1049,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
                         "exp": exp_stacked,
                         "strike": round(k_val, 2),
                         "pct_diff": f"{pct_diff:+.1f}%",
-                        "iv": round(iv_val * 100, 1),
+                        "iv": round((iv_val or 0.45) * 100, 1),
                         "prem": round(prem, 2),
                         "ann": round(ann_pct, 1),
                         "is_safe": k_val < market_data[ticker]["support"]
@@ -1058,7 +1062,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
                 for _, row in calls.iterrows():
                     try:
                         K = float(row['strike'])
-                        iv = float(row['impliedVolatility']) if ('impliedVolatility' in row and not math.isnan(row['impliedVolatility'])) else 0.5
+                        iv = float(row.get('impliedVolatility', 0.45))
                         d = calc_call_delta(spot_price, K, T, r, sigma=iv)
                         if abs(d - delta) < min_c_diff:
                             min_c_diff = abs(d - delta)
@@ -1080,7 +1084,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
                         "exp": exp_stacked,
                         "strike": round(k_val, 2),
                         "pct_diff": f"{pct_diff:+.1f}%",
-                        "iv": round(iv_val * 100, 1),
+                        "iv": round((iv_val or 0.45) * 100, 1),
                         "prem": round(prem, 2),
                         "ann": round(ann_pct, 1),
                         "is_safe": k_val > market_data[ticker]["resistance"]
