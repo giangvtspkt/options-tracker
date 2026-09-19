@@ -109,10 +109,16 @@ HTML_CONTENT = """<!DOCTYPE html>
 
   <!-- 1. Performance & Active Positions -->
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
-    <div class="flex items-center justify-between mb-2">
-      <h2 class="text-xs font-bold text-slate-800 flex items-center gap-1">
-        <span>💼</span> Performance &amp; Active Positions
-      </h2>
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+      <div class="flex items-center gap-2">
+        <h2 class="text-xs font-bold text-slate-800 flex items-center gap-1">
+          <span>💼</span> Performance &amp; Active Positions
+        </h2>
+        <label class="flex items-center gap-1 text-[10px] text-slate-600 cursor-pointer bg-slate-100 px-2 py-0.5 rounded border border-slate-200 select-none">
+          <input id="hideExpiredToggle" type="checkbox" onchange="toggleHideExpired(this.checked)" class="rounded text-blue-600">
+          <span>Hide Expired</span>
+        </label>
+      </div>
       <button onclick="toggleAddForm()" id="toggleFormBtn" class="bg-slate-800 text-white text-[10px] font-bold px-2.5 py-1 rounded-md">
         + Add Position
       </button>
@@ -142,11 +148,14 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Open Contracts Summary by Ticker -->
+    <!-- Open Contracts & CSP Capital Summary -->
     <div class="bg-slate-50 border border-slate-200 rounded-lg p-2.5 mb-3">
-      <div class="text-[11px] font-bold text-slate-600 mb-1.5 flex items-center justify-between">
-        <span>📊 Open Contracts per Ticker</span>
-        <span id="totalOpenQty" class="text-[10px] font-semibold text-slate-500">Total Open: 0</span>
+      <div class="text-[11px] font-bold text-slate-600 mb-1.5 flex flex-wrap items-center justify-between gap-2">
+        <span>📊 Open Contracts &amp; CSP Capital Requirement</span>
+        <div class="flex items-center gap-3 text-[10px] font-semibold">
+          <span id="totalOpenQty" class="text-slate-600">Total Open: 0 contracts</span>
+          <span id="totalCspCapital" class="text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded font-mono font-bold">Total CSP Req: $0.00</span>
+        </div>
       </div>
       <div id="openSummaryCards" class="flex flex-wrap gap-2">
         <span class="text-slate-400 text-[10px]">No active open contracts.</span>
@@ -230,7 +239,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- 2. Tickers & Delta Box (Below Contract Table) -->
+  <!-- 2. Tickers & Delta Box -->
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
     <div class="grid grid-cols-2 gap-2 mb-2">
       <div>
@@ -316,6 +325,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     let cloudPositions = [];
     let progressTimer = null;
     let elapsedSeconds = 0;
+    let hideExpired = localStorage.getItem('hideExpiredContracts') === 'true';
 
     const EXP_COLOR_PALETTE = [
       'bg-indigo-50/80',
@@ -326,6 +336,12 @@ HTML_CONTENT = """<!DOCTYPE html>
       'bg-sky-50/80',
       'bg-teal-50/80'
     ];
+
+    function toggleHideExpired(checked) {
+      hideExpired = checked;
+      localStorage.setItem('hideExpiredContracts', checked);
+      renderPositionsAndPL();
+    }
 
     function getExpColor(expKey, map) {
       if (!expKey) return 'hover:bg-slate-50';
@@ -415,10 +431,12 @@ HTML_CONTENT = """<!DOCTYPE html>
     }
 
     function renderPositionsAndPL() {
+      document.getElementById('hideExpiredToggle').checked = hideExpired;
       const tbody = document.getElementById('positionsBody');
       const now = new Date();
       const currentYear = now.getFullYear();
       const currentMonth = now.getMonth();
+      const todayStr = now.toISOString().split('T')[0];
 
       let lastMonthYear = currentYear;
       let lastMonth = currentMonth - 1;
@@ -427,43 +445,52 @@ HTML_CONTENT = """<!DOCTYPE html>
         lastMonthYear--;
       }
 
-      const filteredPositions = [];
+      const currentMonthPositions = [];
       cloudPositions.forEach(p => {
         const parts = p.exp.split('-');
         const pYear = parseInt(parts[0], 10);
         const pMonth = parseInt(parts[1], 10) - 1;
         if (pYear > currentYear || (pYear === currentYear && pMonth >= currentMonth)) {
-          filteredPositions.push(p);
+          currentMonthPositions.push(p);
         }
       });
 
-      filteredPositions.sort((a, b) => {
+      // Sort by Exp (earliest to latest), then alphabetically by Ticker
+      currentMonthPositions.sort((a, b) => {
         const dateDiff = new Date(a.exp) - new Date(b.exp);
         if (dateDiff !== 0) return dateDiff;
         return a.ticker.localeCompare(b.ticker);
       });
 
-      const todayStr = now.toISOString().split('T')[0];
+      // Compute Open Stats and CSP Collateral Requirements
       const openStats = {};
       let totalOpenCount = 0;
+      let totalCspCapital = 0;
 
       cloudPositions.forEach(p => {
         const isExpired = p.exp < todayStr;
         if (!isExpired) {
           totalOpenCount += p.qty;
           if (!openStats[p.ticker]) {
-            openStats[p.ticker] = { total: 0, puts: 0, calls: 0 };
+            openStats[p.ticker] = { total: 0, puts: 0, calls: 0, cspCapital: 0 };
           }
           openStats[p.ticker].total += p.qty;
-          if (p.type === 'PUT') openStats[p.ticker].puts += p.qty;
-          else if (p.type === 'CALL') openStats[p.ticker].calls += p.qty;
+          if (p.type === 'PUT') {
+            openStats[p.ticker].puts += p.qty;
+            const cap = p.strike * 100 * p.qty;
+            openStats[p.ticker].cspCapital += cap;
+            totalCspCapital += cap;
+          } else if (p.type === 'CALL') {
+            openStats[p.ticker].calls += p.qty;
+          }
         }
       });
 
       const summaryContainer = document.getElementById('openSummaryCards');
       document.getElementById('totalOpenQty').innerText = `Total Open: ${totalOpenCount} contracts`;
-      const openTickers = Object.keys(openStats);
+      document.getElementById('totalCspCapital').innerText = `Total CSP Req: $${totalCspCapital.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+      const openTickers = Object.keys(openStats);
       if (openTickers.length === 0) {
         summaryContainer.innerHTML = '<span class="text-slate-400 text-[10px]">No active open contracts.</span>';
       } else {
@@ -472,30 +499,37 @@ HTML_CONTENT = """<!DOCTYPE html>
           const s = openStats[t];
           const card = document.createElement('div');
           card.className = "bg-white border border-slate-200 rounded px-2.5 py-1 text-[10px] flex items-center gap-2 shadow-xs";
+          
+          const cspCapStr = s.cspCapital > 0 
+            ? `<span class="text-emerald-700 font-bold bg-emerald-50 px-1 rounded border border-emerald-200">CSP Req: $${s.cspCapital.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>`
+            : '';
+
           card.innerHTML = `
             <span class="font-bold text-slate-800">${t}:</span>
             <span class="font-extrabold text-blue-700">${s.total}</span>
             <span class="text-[9px] text-slate-400 font-mono">(${s.puts}P / ${s.calls}C)</span>
+            ${cspCapStr}
           `;
           summaryContainer.appendChild(card);
         });
       }
 
-      if (filteredPositions.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="p-2 text-center text-slate-400">No active positions for this month.</td></tr>';
-        document.getElementById('totalRealized').innerText = "$0.00";
-        document.getElementById('lastMonthRealized').innerText = "$0.00";
-        document.getElementById('thisMonthRealized').innerText = "$0.00";
-        document.getElementById('thisMonthUnrealized').innerText = "$0.00";
-        document.getElementById('totalUnrealized').innerText = "$0.00";
-        return;
+      // Filter rows if "Hide Expired" is active
+      const visiblePositions = hideExpired 
+        ? currentMonthPositions.filter(p => p.exp >= todayStr)
+        : currentMonthPositions;
+
+      if (visiblePositions.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" class="p-2 text-center text-slate-400">${hideExpired ? 'No active open positions remaining.' : 'No active positions for this month.'}</td></tr>`;
+      } else {
+        tbody.innerHTML = '';
       }
 
-      tbody.innerHTML = '';
       let totalRealized = 0, thisMonthRealized = 0, lastMonthRealized = 0, thisMonthUnrealized = 0, totalUnrealized = 0;
       const posColorMap = {};
 
-      filteredPositions.forEach(p => {
+      // Compute P/L across all current month positions
+      currentMonthPositions.forEach(p => {
         const parts = p.exp.split('-');
         const pYear = parseInt(parts[0], 10);
         const pMonth = parseInt(parts[1], 10) - 1;
@@ -504,22 +538,17 @@ HTML_CONTENT = """<!DOCTYPE html>
         const spot = (globalData && globalData.market && globalData.market[p.ticker]) ? globalData.market[p.ticker].spot : null;
 
         let pl = 0;
-        let statusHtml = '';
-
         if (isExpired) {
           if (p.action === 'SELL') {
             if ((p.type === 'PUT' && (!spot || spot >= p.strike)) || (p.type === 'CALL' && (!spot || spot <= p.strike))) {
               pl = p.prem * 100 * p.qty;
-              statusHtml = '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">Expired (Win)</span>';
             } else {
               const intrinsic = p.type === 'PUT' ? Math.max(p.strike - spot, 0) : Math.max(spot - p.strike, 0);
               pl = (p.prem - intrinsic) * 100 * p.qty;
-              statusHtml = '<span class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">Assigned</span>';
             }
           } else {
             const intrinsic = p.type === 'CALL' ? Math.max((spot || 0) - p.strike, 0) : Math.max(p.strike - (spot || 0), 0);
             pl = (intrinsic - p.prem) * 100 * p.qty;
-            statusHtml = '<span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-bold">Closed</span>';
           }
 
           totalRealized += pl;
@@ -527,41 +556,54 @@ HTML_CONTENT = """<!DOCTYPE html>
           else if (pYear === lastMonthYear && pMonth === lastMonth) lastMonthRealized += pl;
         } else {
           pl = p.action === 'SELL' ? (p.prem * 100 * p.qty) : 0;
-          statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
           totalUnrealized += pl;
           if (isThisMonth) thisMonthUnrealized += pl;
         }
 
-        const plColor = pl >= 0 ? 'text-emerald-700' : 'text-rose-700';
-        const plPrefix = pl >= 0 ? '+$' : '-$';
-        const plDisplay = `${plPrefix}${Math.abs(pl).toFixed(2)}`;
+        // Render visible rows
+        if (!hideExpired || !isExpired) {
+          let statusHtml = '';
+          if (isExpired) {
+            if (p.action === 'SELL' && ((p.type === 'PUT' && (!spot || spot >= p.strike)) || (p.type === 'CALL' && (!spot || spot <= p.strike)))) {
+              statusHtml = '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">Expired (Win)</span>';
+            } else {
+              statusHtml = '<span class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">Assigned</span>';
+            }
+          } else {
+            statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
+          }
 
-        const actionBadge = p.action === 'SELL'
-          ? '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">SELL</span>'
-          : '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">BUY</span>';
+          const plColor = pl >= 0 ? 'text-emerald-700' : 'text-rose-700';
+          const plPrefix = pl >= 0 ? '+$' : '-$';
+          const plDisplay = `${plPrefix}${Math.abs(pl).toFixed(2)}`;
 
-        const rowBg = getExpColor(p.exp, posColorMap);
-        const curTradeDate = p.trade_date || '';
+          const actionBadge = p.action === 'SELL'
+            ? '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">SELL</span>'
+            : '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">BUY</span>';
 
-        const tr = document.createElement('tr');
-        tr.className = `border-b ${rowBg}`;
-        tr.innerHTML = `
-          <td class="p-1.5 border-r whitespace-nowrap">${actionBadge}</td>
-          <td class="p-1.5 border-r whitespace-nowrap font-bold">${p.ticker} $${p.strike} ${p.type} (x${p.qty})</td>
-          <td class="p-1 border-r whitespace-nowrap">
-            <input type="date" value="${curTradeDate}"
-              onchange="updatePositionField(${p.id}, 'trade_date', this.value)"
-              class="border rounded px-1 py-0.5 bg-white font-mono text-[9px] text-slate-700">
-          </td>
-          <td class="p-1.5 border-r whitespace-nowrap text-slate-700 font-mono font-bold">${p.exp}</td>
-          <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
-          <td class="p-1.5 border-r whitespace-nowrap font-mono font-bold ${plColor}">${plDisplay}</td>
-          <td class="p-1.5 border-r whitespace-nowrap">${statusHtml}</td>
-          <td class="p-1.5 text-center">
-            <button onclick="deletePosition(${p.id})" class="text-rose-600 hover:text-rose-800 font-bold">✕</button>
-          </td>
-        `;
-        tbody.appendChild(tr);
+          const rowBg = getExpColor(p.exp, posColorMap);
+          const curTradeDate = p.trade_date || '';
+
+          const tr = document.createElement('tr');
+          tr.className = `border-b ${rowBg}`;
+          tr.innerHTML = `
+            <td class="p-1.5 border-r whitespace-nowrap">${actionBadge}</td>
+            <td class="p-1.5 border-r whitespace-nowrap font-bold">${p.ticker} $${p.strike} ${p.type} (x${p.qty})</td>
+            <td class="p-1 border-r whitespace-nowrap">
+              <input type="date" value="${curTradeDate}"
+                onchange="updatePositionField(${p.id}, 'trade_date', this.value)"
+                class="border rounded px-1 py-0.5 bg-white font-mono text-[9px] text-slate-700">
+            </td>
+            <td class="p-1.5 border-r whitespace-nowrap text-slate-700 font-mono font-bold">${p.exp}</td>
+            <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
+            <td class="p-1.5 border-r whitespace-nowrap font-mono font-bold ${plColor}">${plDisplay}</td>
+            <td class="p-1.5 border-r whitespace-nowrap">${statusHtml}</td>
+            <td class="p-1.5 text-center">
+              <button onclick="deletePosition(${p.id})" class="text-rose-600 hover:text-rose-800 font-bold">✕</button>
+            </td>
+          `;
+          tbody.appendChild(tr);
+        }
       });
 
       const fmt = (val) => `${val >= 0 ? '+$' : '-$'}${Math.abs(val).toFixed(2)}`;
@@ -619,7 +661,6 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         if (!res.ok) throw new Error("API error " + res.status);
         globalData = await res.json();
-        console.log("Option Chain Data Received:", globalData);
 
         renderLevelsTable(globalData.market);
         renderPills(globalData.tickers);
@@ -629,7 +670,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         status.innerHTML = `<span class="text-emerald-600 font-bold">✓ Updated</span> at ${new Date().toLocaleTimeString()} (${elapsedSeconds}s)`;
       } catch (err) {
         clearInterval(progressTimer);
-        console.error("Fetch Error:", err);
         status.innerHTML = `<span class="text-rose-600 font-bold">✕ Yahoo Finance did not respond.</span> Please retry.`;
         document.getElementById('putsBody').innerHTML = `<tr><td class="p-3 text-center text-rose-500">Could not load Put chain. Tap 'Refresh Data' to try again.</td></tr>`;
         document.getElementById('callsBody').innerHTML = `<tr><td class="p-3 text-center text-rose-500">Could not load Call chain. Tap 'Refresh Data' to try again.</td></tr>`;
@@ -723,7 +763,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         const isSweetSpot = (tgt === 21 || tgt === 30);
         const badge = isSweetSpot ? '★ ' : '';
 
-        // Safely check both integer and string keyed results
         const targetDict = (results && (results[tgt] || results[String(tgt)])) || {};
 
         let rowExpKey = '';
@@ -811,7 +850,6 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
     today = datetime.date.today()
     
     market_data = {}
-    # Use string keys so JSON serialization matches exactly
     results_puts = {str(t): {} for t in target_periods}
     results_calls = {str(t): {} for t in target_periods}
 
@@ -855,7 +893,6 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
             "resistance": round(max(r1, rolling_resistance), 2)
         }
 
-        # 1. Match closest expiration dates by minimum day difference (never misses a date)
         target_to_exp = {}
         for target in target_periods:
             closest_exp = None
@@ -874,7 +911,6 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
             if closest_exp:
                 target_to_exp[target] = closest_exp
 
-        # 2. Download option chain once per unique expiration
         unique_exps = set(target_to_exp.values())
         loaded_chains = {}
         for exp in unique_exps:
@@ -883,7 +919,6 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
             except Exception:
                 continue
 
-        # 3. Calculate Greeks and populate results
         for target, exp in target_to_exp.items():
             if exp not in loaded_chains:
                 continue
