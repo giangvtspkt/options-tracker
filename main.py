@@ -540,7 +540,10 @@ HTML_CONTENT = """<!DOCTYPE html>
         const isThisMonth = (pYear === currentYear && pMonth === currentMonth);
         const spot = (globalData && globalData.market && globalData.market[p.ticker]) ? globalData.market[p.ticker].spot : null;
 
-        const contractKey = `${p.ticker}_${p.exp}_${p.strike}_${p.type}`;
+        // Formatted key ensuring 2 decimals (matches python backend)
+        const strikeFormatted = parseFloat(p.strike).toFixed(2);
+        const contractKey = `${p.ticker.toUpperCase()}_${p.exp}_${strikeFormatted}_${p.type.toUpperCase()}`;
+
         const liveMark = (globalData && globalData.live_positions && globalData.live_positions[contractKey] !== undefined)
           ? globalData.live_positions[contractKey]
           : null;
@@ -589,10 +592,8 @@ HTML_CONTENT = """<!DOCTYPE html>
             } else {
               currentPl = (liveMark - p.prem) * 100 * p.qty;
             }
-          } else {
-            currentPl = 0.0;
+            currentUnrealized += currentPl;
           }
-          currentUnrealized += currentPl;
 
           if (p.action === 'SELL' && spot !== null && spot !== undefined) {
             const pctFromStrike = ((spot - p.strike) / p.strike) * 100;
@@ -722,7 +723,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         if (!res.ok) throw new Error("API error " + res.status);
         globalData = await res.json();
 
-        // Render diagnostics banner if any ticker encountered an issue
         const diagBanner = document.getElementById('diagBanner');
         const diagList = document.getElementById('diagList');
         diagList.innerHTML = '';
@@ -944,9 +944,10 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
     positions, _ = get_positions_from_github()
     ticker_set = set(t.strip().upper() for t in tickers.split(",") if t.strip())
 
+    # Ensure all open position tickers are fetched so mark-to-market works
     today = datetime.date.today()
     for p in positions:
-        if p.get("exp", "") >= str(today) and p.get("ticker"):
+        if p.get("ticker"):
             ticker_set.add(p["ticker"].strip().upper())
 
     ticker_list = sorted(list(ticker_set))
@@ -975,17 +976,17 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
                     spot_price = float(hist_1d['Close'].iloc[-1])
 
             if not spot_price or spot_price <= 0:
-                diagnostics[ticker] = "Could not fetch spot price (Yahoo Finance returned $0.00)"
+                diagnostics[ticker] = "Could not fetch spot price"
                 continue
 
             expirations = list(tkr.options) if tkr.options else []
             if not expirations:
-                diagnostics[ticker] = f"No option expiration dates returned by Yahoo Finance for spot ${spot_price:.2f}"
+                diagnostics[ticker] = f"No option expiration dates returned for spot ${spot_price:.2f}"
                 continue
 
             df_hist = tkr.history(period="30d")
         except Exception as e:
-            diagnostics[ticker] = f"Connection error reading Yahoo Finance: {str(e)}"
+            diagnostics[ticker] = f"Error reading Yahoo Finance: {str(e)}"
             continue
 
         if not df_hist.empty and len(df_hist) >= 2:
@@ -1011,6 +1012,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
             "resistance": round(max(r1, rolling_resistance), 2)
         }
 
+        # 1. Match closest expiration dates by minimum business-day difference
         target_to_exp = {}
         for target in target_periods:
             closest_exp = None
@@ -1028,9 +1030,8 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
                     closest_exp = exp
             if closest_exp:
                 target_to_exp[target] = closest_exp
-            else:
-                diagnostics[f"{ticker}_{target}d"] = f"No future expiration found close to {target} days"
 
+        # 2. Gather all needed expirations (both targets and active contracts)
         needed_exps = set(target_to_exp.values())
         for p in positions:
             if p.get("ticker", "").upper() == ticker and p.get("exp") in expirations:
@@ -1041,27 +1042,33 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
             try:
                 loaded_chains[exp] = tkr.option_chain(exp)
             except Exception as e:
-                diagnostics[f"{ticker}_{exp}"] = f"Failed to download option chain: {str(e)}"
                 continue
 
+        # 3. Resolve live contract mark prices for active positions
         for p in positions:
             if p.get("ticker", "").upper() == ticker and p.get("exp") in loaded_chains:
                 chain = loaded_chains[p["exp"]]
-                df_opts = chain.puts if p.get("type") == "PUT" else chain.calls
+                df_opts = chain.puts if p.get("type", "").upper() == "PUT" else chain.calls
                 k_target = float(p.get("strike", 0))
-                match = df_opts[abs(df_opts["strike"] - k_target) < 0.01]
+                
+                # Match closest strike within 0.05
+                match = df_opts[abs(df_opts["strike"] - k_target) < 0.05]
                 if not match.empty:
                     row_data = match.iloc[0]
-                    ask = float(row_data.get("ask", 0))
-                    last_p = float(row_data.get("lastPrice", 0))
-                    mark = ask if ask > 0 else last_p
-                    contract_key = f"{ticker}_{p['exp']}_{k_target}_{p['type']}"
+                    ask = float(row_data.get("ask", 0) or 0)
+                    bid = float(row_data.get("bid", 0) or 0)
+                    last_p = float(row_data.get("lastPrice", 0) or 0)
+
+                    # Robust pricing fallback: ask -> lastPrice -> bid -> mid
+                    mark = ask if ask > 0 else (last_p if last_p > 0 else (bid if bid > 0 else 0.0))
+                    
+                    # Consistent 2-decimal key (matches JS)
+                    contract_key = f"{ticker}_{p['exp']}_{k_target:.2f}_{p['type'].upper()}"
                     live_positions[contract_key] = round(mark, 2)
 
+        # 4. Populate Put and Call Option chains
         for target, exp in target_to_exp.items():
             if exp not in loaded_chains:
-                diagnostics[f"{ticker}_{target}d_Put"] = f"Option chain missing for {exp}"
-                diagnostics[f"{ticker}_{target}d_Call"] = f"Option chain missing for {exp}"
                 continue
 
             chain = loaded_chains[exp]
@@ -1082,7 +1089,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
                 for _, row in puts.iterrows():
                     try:
                         K = float(row['strike'])
-                        iv = float(row.get('impliedVolatility', 0.45))
+                        iv = float(row.get('impliedVolatility', 0.45) or 0.45)
                         d = calc_put_delta(spot_price, K, T, r, sigma=iv)
                         if abs(d - (-delta)) < min_p_diff:
                             min_p_diff = abs(d - (-delta))
@@ -1092,8 +1099,8 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
 
                 if best_put is not None:
                     row, k_val, iv_val = best_put
-                    bid = float(row.get('bid', 0)) if not math.isnan(row.get('bid', 0)) else 0
-                    last_p = float(row.get('lastPrice', 0)) if not math.isnan(row.get('lastPrice', 0)) else 0
+                    bid = float(row.get('bid', 0) or 0)
+                    last_p = float(row.get('lastPrice', 0) or 0)
                     prem = bid if bid > 0 else last_p
                     yield_pct = (prem / k_val * 100) if k_val > 0 else 0
                     ann_pct = yield_pct * 252 / actual_b_days
@@ -1109,10 +1116,6 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
                         "ann": round(ann_pct, 1),
                         "is_safe": k_val < market_data[ticker]["support"]
                     }
-                else:
-                    diagnostics[f"{ticker}_{target}d_Put"] = f"No strike reached delta {-delta}"
-            else:
-                diagnostics[f"{ticker}_{target}d_Put"] = f"Put table empty from Yahoo for {exp}"
 
             # Calls
             if calls is not None and not calls.empty:
@@ -1121,7 +1124,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
                 for _, row in calls.iterrows():
                     try:
                         K = float(row['strike'])
-                        iv = float(row.get('impliedVolatility', 0.45))
+                        iv = float(row.get('impliedVolatility', 0.45) or 0.45)
                         d = calc_call_delta(spot_price, K, T, r, sigma=iv)
                         if abs(d - delta) < min_c_diff:
                             min_c_diff = abs(d - delta)
@@ -1131,8 +1134,8 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
 
                 if best_call is not None:
                     row, k_val, iv_val = best_call
-                    bid = float(row.get('bid', 0)) if not math.isnan(row.get('bid', 0)) else 0
-                    last_p = float(row.get('lastPrice', 0)) if not math.isnan(row.get('lastPrice', 0)) else 0
+                    bid = float(row.get('bid', 0) or 0)
+                    last_p = float(row.get('lastPrice', 0) or 0)
                     prem = bid if bid > 0 else last_p
                     yield_pct = (prem / spot_price * 100) if spot_price > 0 else 0
                     ann_pct = yield_pct * 252 / actual_b_days
@@ -1148,10 +1151,6 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
                         "ann": round(ann_pct, 1),
                         "is_safe": k_val > market_data[ticker]["resistance"]
                     }
-                else:
-                    diagnostics[f"{ticker}_{target}d_Call"] = f"No strike reached delta {delta}"
-            else:
-                diagnostics[f"{ticker}_{target}d_Call"] = f"Call table empty from Yahoo for {exp}"
 
     return {
         "market": market_data,
