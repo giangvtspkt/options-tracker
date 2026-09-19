@@ -217,7 +217,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Contract Positions Table with Current P&L and Max P&L -->
+    <!-- Contract Positions Table with Live Rolling Alerts -->
     <div class="overflow-x-auto border border-slate-200 rounded-lg">
       <table class="w-full text-left text-[10px]">
         <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold">
@@ -230,7 +230,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             <th class="p-1.5 border-r">Live Mark</th>
             <th class="p-1.5 border-r font-extrabold text-blue-900 bg-blue-50/70">Current P/L ($)</th>
             <th class="p-1.5 border-r">Max P/L ($)</th>
-            <th class="p-1.5 border-r">Status</th>
+            <th class="p-1.5 border-r">Status / Alert</th>
             <th class="p-1.5 text-center">Delete</th>
           </tr>
         </thead>
@@ -540,6 +540,11 @@ HTML_CONTENT = """<!DOCTYPE html>
           ? globalData.live_positions[contractKey]
           : null;
 
+        // Calculate DTE
+        const expDate = new Date(p.exp);
+        const diffTime = expDate - new Date(todayStr);
+        const dte = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
         let maxPl = 0;
         let currentPl = 0;
         let statusHtml = '';
@@ -584,7 +589,31 @@ HTML_CONTENT = """<!DOCTYPE html>
             currentPl = 0.0;
           }
           currentUnrealized += currentPl;
-          statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
+
+          // Rolling Alert Logic
+          if (p.action === 'SELL' && spot !== null && spot !== undefined) {
+            const pctFromStrike = ((spot - p.strike) / p.strike) * 100;
+
+            if (p.type === 'PUT') {
+              if (spot <= p.strike || (dte <= 5 && pctFromStrike <= 1.5)) {
+                statusHtml = '<span class="px-1.5 py-0.5 rounded bg-rose-600 text-white font-extrabold animate-pulse shadow-sm whitespace-nowrap">ROLL / ASSIGN NOW</span>';
+              } else if (pctFromStrike <= 3.0 || (dte <= 10 && currentPl < 0)) {
+                statusHtml = '<span class="px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-extrabold whitespace-nowrap shadow-sm">ROLL SOON</span>';
+              } else {
+                statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold whitespace-nowrap">Active</span>';
+              }
+            } else if (p.type === 'CALL') {
+              if (spot >= p.strike) {
+                statusHtml = '<span class="px-1.5 py-0.5 rounded bg-purple-700 text-white font-bold whitespace-nowrap shadow-sm">MAX PROFIT / ASSIGN</span>';
+              } else if (pctFromStrike >= -2.0) {
+                statusHtml = '<span class="px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-bold whitespace-nowrap shadow-sm">TESTED</span>';
+              } else {
+                statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold whitespace-nowrap">Active</span>';
+              }
+            }
+          } else {
+            statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold whitespace-nowrap">Active</span>';
+          }
         }
 
         if (!hideExpired || !isExpired) {
@@ -1044,7 +1073,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
                     prem = bid if bid > 0 else last_p
                     yield_pct = (prem / spot_price * 100) if spot_price > 0 else 0
                     ann_pct = yield_pct * 252 / actual_b_days
-                    pct_diff = ((best_call['strike'] - spot_price) / spot_price) * 100
+                    pct_diff = ((k_val - spot_price) / spot_price) * 100
 
                     results_calls[str(target)][ticker] = {
                         "raw_exp": exp,
