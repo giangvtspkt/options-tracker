@@ -139,12 +139,12 @@ HTML_CONTENT = """<!DOCTYPE html>
         <div id="thisMonthRealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
       </div>
       <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
-        <div class="text-[10px] font-bold text-slate-500">This Mo Unrealized</div>
-        <div id="thisMonthUnrealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
+        <div class="text-[10px] font-bold text-slate-500">Current Unrealized</div>
+        <div id="thisMonthCurrentUnrealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
       </div>
       <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center col-span-2 sm:col-span-1">
-        <div class="text-[10px] font-bold text-slate-500">Total Unrealized</div>
-        <div id="totalUnrealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
+        <div class="text-[10px] font-bold text-slate-500">Max Unrealized</div>
+        <div id="totalMaxUnrealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
       </div>
     </div>
 
@@ -217,7 +217,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Contract Positions Table -->
+    <!-- Contract Positions Table with Current P&L and Max P&L -->
     <div class="overflow-x-auto border border-slate-200 rounded-lg">
       <table class="w-full text-left text-[10px]">
         <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold">
@@ -226,14 +226,16 @@ HTML_CONTENT = """<!DOCTYPE html>
             <th class="p-1.5 border-r">Contract</th>
             <th class="p-1.5 border-r">Trade Day ✎</th>
             <th class="p-1.5 border-r">Exp ▲</th>
-            <th class="p-1.5 border-r">Prem ($)</th>
-            <th class="p-1.5 border-r">P/L ($)</th>
+            <th class="p-1.5 border-r">Entry</th>
+            <th class="p-1.5 border-r">Live Mark</th>
+            <th class="p-1.5 border-r font-extrabold text-blue-900 bg-blue-50/70">Current P/L ($)</th>
+            <th class="p-1.5 border-r">Max P/L ($)</th>
             <th class="p-1.5 border-r">Status</th>
             <th class="p-1.5 text-center">Delete</th>
           </tr>
         </thead>
         <tbody id="positionsBody">
-          <tr><td colspan="8" class="p-2 text-center text-slate-400">Loading positions...</td></tr>
+          <tr><td colspan="10" class="p-2 text-center text-slate-400">Loading positions...</td></tr>
         </tbody>
       </table>
     </div>
@@ -366,7 +368,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         cloudPositions = await res.json();
         renderPositionsAndPL();
       } catch (e) {
-        document.getElementById('positionsBody').innerHTML = '<tr><td colspan="8" class="p-2 text-center text-slate-400">No active positions saved.</td></tr>';
+        document.getElementById('positionsBody').innerHTML = '<tr><td colspan="10" class="p-2 text-center text-slate-400">No active positions saved.</td></tr>';
       }
     }
 
@@ -455,14 +457,12 @@ HTML_CONTENT = """<!DOCTYPE html>
         }
       });
 
-      // Sort by Exp (earliest to latest), then alphabetically by Ticker
       currentMonthPositions.sort((a, b) => {
         const dateDiff = new Date(a.exp) - new Date(b.exp);
         if (dateDiff !== 0) return dateDiff;
         return a.ticker.localeCompare(b.ticker);
       });
 
-      // Compute Open Stats and CSP Collateral Requirements
       const openStats = {};
       let totalOpenCount = 0;
       let totalCspCapital = 0;
@@ -514,21 +514,19 @@ HTML_CONTENT = """<!DOCTYPE html>
         });
       }
 
-      // Filter rows if "Hide Expired" is active
       const visiblePositions = hideExpired 
         ? currentMonthPositions.filter(p => p.exp >= todayStr)
         : currentMonthPositions;
 
       if (visiblePositions.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" class="p-2 text-center text-slate-400">${hideExpired ? 'No active open positions remaining.' : 'No active positions for this month.'}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" class="p-2 text-center text-slate-400">${hideExpired ? 'No active open positions remaining.' : 'No active positions for this month.'}</td></tr>`;
       } else {
         tbody.innerHTML = '';
       }
 
-      let totalRealized = 0, thisMonthRealized = 0, lastMonthRealized = 0, thisMonthUnrealized = 0, totalUnrealized = 0;
+      let totalRealized = 0, thisMonthRealized = 0, lastMonthRealized = 0, totalMaxUnrealized = 0, currentUnrealized = 0;
       const posColorMap = {};
 
-      // Compute P/L across all current month positions
       currentMonthPositions.forEach(p => {
         const parts = p.exp.split('-');
         const pYear = parseInt(parts[0], 10);
@@ -537,45 +535,70 @@ HTML_CONTENT = """<!DOCTYPE html>
         const isThisMonth = (pYear === currentYear && pMonth === currentMonth);
         const spot = (globalData && globalData.market && globalData.market[p.ticker]) ? globalData.market[p.ticker].spot : null;
 
-        let pl = 0;
+        // Fetch live quote mark if available from backend
+        const contractKey = `${p.ticker}_${p.exp}_${p.strike}_${p.type}`;
+        const liveMark = (globalData && globalData.live_positions && globalData.live_positions[contractKey] !== undefined)
+          ? globalData.live_positions[contractKey]
+          : null;
+
+        let maxPl = 0;
+        let currentPl = 0;
+        let statusHtml = '';
+
         if (isExpired) {
           if (p.action === 'SELL') {
             if ((p.type === 'PUT' && (!spot || spot >= p.strike)) || (p.type === 'CALL' && (!spot || spot <= p.strike))) {
-              pl = p.prem * 100 * p.qty;
-            } else {
-              const intrinsic = p.type === 'PUT' ? Math.max(p.strike - spot, 0) : Math.max(spot - p.strike, 0);
-              pl = (p.prem - intrinsic) * 100 * p.qty;
-            }
-          } else {
-            const intrinsic = p.type === 'CALL' ? Math.max((spot || 0) - p.strike, 0) : Math.max(p.strike - (spot || 0), 0);
-            pl = (intrinsic - p.prem) * 100 * p.qty;
-          }
-
-          totalRealized += pl;
-          if (isThisMonth) thisMonthRealized += pl;
-          else if (pYear === lastMonthYear && pMonth === lastMonth) lastMonthRealized += pl;
-        } else {
-          pl = p.action === 'SELL' ? (p.prem * 100 * p.qty) : 0;
-          totalUnrealized += pl;
-          if (isThisMonth) thisMonthUnrealized += pl;
-        }
-
-        // Render visible rows
-        if (!hideExpired || !isExpired) {
-          let statusHtml = '';
-          if (isExpired) {
-            if (p.action === 'SELL' && ((p.type === 'PUT' && (!spot || spot >= p.strike)) || (p.type === 'CALL' && (!spot || spot <= p.strike)))) {
+              maxPl = p.prem * 100 * p.qty;
               statusHtml = '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">Expired (Win)</span>';
             } else {
+              const intrinsic = p.type === 'PUT' ? Math.max(p.strike - spot, 0) : Math.max(spot - p.strike, 0);
+              maxPl = (p.prem - intrinsic) * 100 * p.qty;
               statusHtml = '<span class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">Assigned</span>';
             }
           } else {
-            statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
+            const intrinsic = p.type === 'CALL' ? Math.max((spot || 0) - p.strike, 0) : Math.max(p.strike - (spot || 0), 0);
+            maxPl = (intrinsic - p.prem) * 100 * p.qty;
+            statusHtml = '<span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-bold">Closed</span>';
           }
 
-          const plColor = pl >= 0 ? 'text-emerald-700' : 'text-rose-700';
-          const plPrefix = pl >= 0 ? '+$' : '-$';
-          const plDisplay = `${plPrefix}${Math.abs(pl).toFixed(2)}`;
+          currentPl = maxPl; // On expiration, current P&L matches final realized P&L
+          totalRealized += maxPl;
+          if (isThisMonth) thisMonthRealized += maxPl;
+          else if (pYear === lastMonthYear && pMonth === lastMonth) lastMonthRealized += maxPl;
+        } else {
+          // Open position: Max P&L is full initial collected premium
+          maxPl = (p.action === 'SELL') ? (p.prem * 100 * p.qty) : (-p.prem * 100 * p.qty);
+          totalMaxUnrealized += maxPl;
+
+          // Mark-to-market Current P&L calculation
+          if (liveMark !== null) {
+            if (p.action === 'SELL') {
+              // Sold option: Profit = Entry Premium - Current Cost to Buy Back
+              currentPl = (p.prem - liveMark) * 100 * p.qty;
+            } else {
+              currentPl = (liveMark - p.prem) * 100 * p.qty;
+            }
+          } else {
+            currentPl = 0.0;
+          }
+          currentUnrealized += currentPl;
+          statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
+        }
+
+        if (!hideExpired || !isExpired) {
+          const maxPlColor = maxPl >= 0 ? 'text-emerald-700' : 'text-rose-700';
+          const maxPlPrefix = maxPl >= 0 ? '+$' : '-$';
+          const maxPlDisplay = `${maxPlPrefix}${Math.abs(maxPl).toFixed(2)}`;
+
+          const curPlColor = currentPl >= 0 ? 'text-emerald-700' : 'text-rose-700';
+          const curPlPrefix = currentPl >= 0 ? '+$' : '-$';
+          const curPlDisplay = (isExpired || liveMark !== null)
+            ? `${curPlPrefix}${Math.abs(currentPl).toFixed(2)}`
+            : '<span class="text-slate-400 font-normal">Syncing...</span>';
+
+          const markDisplay = (liveMark !== null)
+            ? `$${liveMark.toFixed(2)}`
+            : (isExpired ? '<span class="text-slate-400">$0.00</span>' : '<span class="text-slate-400 font-normal">-</span>');
 
           const actionBadge = p.action === 'SELL'
             ? '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">SELL</span>'
@@ -596,7 +619,9 @@ HTML_CONTENT = """<!DOCTYPE html>
             </td>
             <td class="p-1.5 border-r whitespace-nowrap text-slate-700 font-mono font-bold">${p.exp}</td>
             <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
-            <td class="p-1.5 border-r whitespace-nowrap font-mono font-bold ${plColor}">${plDisplay}</td>
+            <td class="p-1.5 border-r whitespace-nowrap font-mono font-medium text-slate-700">${markDisplay}</td>
+            <td class="p-1.5 border-r whitespace-nowrap font-mono font-extrabold bg-blue-50/40 ${curPlColor}">${curPlDisplay}</td>
+            <td class="p-1.5 border-r whitespace-nowrap font-mono font-bold ${maxPlColor}">${maxPlDisplay}</td>
             <td class="p-1.5 border-r whitespace-nowrap">${statusHtml}</td>
             <td class="p-1.5 text-center">
               <button onclick="deletePosition(${p.id})" class="text-rose-600 hover:text-rose-800 font-bold">✕</button>
@@ -610,8 +635,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       document.getElementById('totalRealized').innerText = fmt(totalRealized);
       document.getElementById('lastMonthRealized').innerText = fmt(lastMonthRealized);
       document.getElementById('thisMonthRealized').innerText = fmt(thisMonthRealized);
-      document.getElementById('thisMonthUnrealized').innerText = fmt(thisMonthUnrealized);
-      document.getElementById('totalUnrealized').innerText = fmt(totalUnrealized);
+      document.getElementById('thisMonthCurrentUnrealized').innerText = fmt(currentUnrealized);
+      document.getElementById('totalMaxUnrealized').innerText = fmt(totalMaxUnrealized);
     }
 
     function renderLoadingSkeleton() {
@@ -845,13 +870,22 @@ def remove_position(pos_id: int):
 
 @app.get("/api/data")
 def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
-    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
-    target_periods = [7, 14, 21, 30]
+    positions, _ = get_positions_from_github()
+    ticker_set = set(t.strip().upper() for t in tickers.split(",") if t.strip())
+
+    # Include tickers from active positions so live quotes can be calculated
     today = datetime.date.today()
-    
+    for p in positions:
+        if p.get("exp", "") >= str(today) and p.get("ticker"):
+            ticker_set.add(p["ticker"].strip().upper())
+
+    ticker_list = sorted(list(ticker_set))
+    target_periods = [7, 14, 21, 30]
+
     market_data = {}
     results_puts = {str(t): {} for t in target_periods}
     results_calls = {str(t): {} for t in target_periods}
+    live_positions = {}
 
     for ticker in ticker_list:
         try:
@@ -893,6 +927,7 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
             "resistance": round(max(r1, rolling_resistance), 2)
         }
 
+        # Identify unique expirations needed for tracker targets and active positions
         target_to_exp = {}
         for target in target_periods:
             closest_exp = None
@@ -911,13 +946,36 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
             if closest_exp:
                 target_to_exp[target] = closest_exp
 
-        unique_exps = set(target_to_exp.values())
+        # Collect expirations from active open positions for this ticker
+        needed_exps = set(target_to_exp.values())
+        for p in positions:
+            if p.get("ticker", "").upper() == ticker and p.get("exp") in expirations:
+                needed_exps.add(p["exp"])
+
         loaded_chains = {}
-        for exp in unique_exps:
+        for exp in needed_exps:
             try:
                 loaded_chains[exp] = tkr.option_chain(exp)
             except Exception:
                 continue
+
+        # Look up live market marks for open positions
+        for p in positions:
+            if p.get("ticker", "").upper() == ticker and p.get("exp") in loaded_chains:
+                chain = loaded_chains[p["exp"]]
+                df_opts = chain.puts if p.get("type") == "PUT" else chain.calls
+                k_target = float(p.get("strike", 0))
+                
+                # Match strike
+                match = df_opts[abs(df_opts["strike"] - k_target) < 0.01]
+                if not match.empty:
+                    row_data = match.iloc[0]
+                    # Mark to market: use ask price (cost to buy back) or lastPrice
+                    ask = float(row_data.get("ask", 0))
+                    last_p = float(row_data.get("lastPrice", 0))
+                    mark = ask if ask > 0 else last_p
+                    contract_key = f"{ticker}_{p['exp']}_{k_target}_{p['type']}"
+                    live_positions[contract_key] = round(mark, 2)
 
         for target, exp in target_to_exp.items():
             if exp not in loaded_chains:
@@ -1009,7 +1067,8 @@ def get_options_data(tickers: str = "IREN,RKLB", delta: float = 0.2):
         "puts": results_puts,
         "calls": results_calls,
         "tickers": list(market_data.keys()),
-        "targets": target_periods
+        "targets": target_periods,
+        "live_positions": live_positions
     }
 
 @app.get("/", response_class=HTMLResponse)
