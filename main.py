@@ -629,9 +629,17 @@ HTML_CONTENT = """<!DOCTYPE html>
 
           const curPlColor = currentPl >= 0 ? 'text-emerald-700' : 'text-rose-700';
           const curPlPrefix = currentPl >= 0 ? '+$' : '-$';
-          const curPlDisplay = (isExpired || liveMark !== null)
-            ? `${curPlPrefix}${Math.abs(currentPl).toFixed(2)}`
-            : '<span class="text-slate-400 font-normal">Syncing...</span>';
+
+          let curPlDisplay = '<span class="text-slate-400 font-normal">Syncing...</span>';
+          if (isExpired || liveMark !== null) {
+            let pctSpan = '';
+            if (maxPl !== 0) {
+              const pctOfMax = (currentPl / Math.abs(maxPl)) * 100;
+              const pctColor = pctOfMax >= 0 ? 'text-emerald-600' : 'text-rose-600';
+              pctSpan = `<span class="block text-[9px] font-medium ${pctColor}">(${pctOfMax >= 0 ? '+' : ''}${pctOfMax.toFixed(1)}% max)</span>`;
+            }
+            curPlDisplay = `<div>${curPlPrefix}${Math.abs(currentPl).toFixed(2)}${pctSpan}</div>`;
+          }
 
           const markDisplay = (liveMark !== null)
             ? `$${liveMark.toFixed(2)}`
@@ -718,7 +726,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       const tickers = document.getElementById('tickers').value;
       const delta = document.getElementById('delta').value;
 
-      // Collect all tickers present in saved contract positions
       const contractTickers = Array.from(new Set(cloudPositions.map(p => (p.ticker || '').trim().toUpperCase()))).filter(Boolean);
 
       try {
@@ -948,10 +955,8 @@ def remove_position(pos_id: int):
 def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", delta: float = 0.2):
     positions, _ = get_positions_from_github()
     
-    # 1. Primary tickers for option tables
     primary_tickers = [t.strip().upper() for t in tickers.split(",") if t.strip()]
 
-    # 2. Combined tickers: from query + contract_tickers param + saved GitHub positions
     combined_ticker_set = set(primary_tickers)
     for t in contract_tickers.split(","):
         if t.strip():
@@ -1019,7 +1024,6 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
             s1, r1 = spot_price * 0.95, spot_price * 1.05
             rolling_support, rolling_resistance = spot_price * 0.90, spot_price * 1.10
 
-        # Technical levels stored for primary tickers
         if is_primary:
             market_data[ticker] = {
                 "spot": round(spot_price, 2),
@@ -1031,7 +1035,6 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                 "resistance": round(max(r1, rolling_resistance), 2)
             }
 
-        # Determine target expirations for primary tickers
         target_to_exp = {}
         if is_primary:
             for target in target_periods:
@@ -1051,7 +1054,6 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                 if closest_exp:
                     target_to_exp[target] = closest_exp
 
-        # Collect expirations needed for this ticker (targets + saved contracts)
         needed_exps = set(target_to_exp.values())
         for p in positions:
             if p.get("ticker", "").upper() == ticker and p.get("exp") in expirations:
@@ -1064,7 +1066,6 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
             except Exception:
                 continue
 
-        # Look up Live Mark for all user contracts of this ticker
         for p in positions:
             if p.get("ticker", "").upper() == ticker and p.get("exp") in loaded_chains:
                 chain = loaded_chains[p["exp"]]
@@ -1082,7 +1083,6 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                     contract_key = f"{ticker}_{p['exp']}_{k_target:.2f}_{p['type'].upper()}"
                     live_positions[contract_key] = round(mark, 2)
 
-        # Build Put and Call tables strictly for primary tickers
         if is_primary:
             for target, exp in target_to_exp.items():
                 if exp not in loaded_chains:
@@ -1158,19 +1158,21 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                         ann_pct = yield_pct * 252 / actual_b_days
                         pct_diff = ((k_val - spot_price) / spot_price) * 100
 
-                    results_calls[str(target)][ticker] = {
-                        "raw_exp": exp,
-                        "exp": exp_stacked,
-                        "strike": round(k_val, 2),
-                        "pct_diff": f"{pct_diff:+.1f}%",
-                        "iv": round((iv_val or 0.45) * 100, 1),
-                        "prem": round(prem, 2),
-                        "ann": round(ann_pct, 1),
-                        "is_safe": k_val > market_data[ticker]["resistance"]
-                    }
+                        results_calls[str(target)][ticker] = {
+                            "raw_exp": exp,
+                            "exp": exp_stacked,
+                            "strike": round(k_val, 2),
+                            "pct_diff": f"{pct_diff:+.1f}%",
+                            "iv": round((iv_val or 0.45) * 100, 1),
+                            "prem": round(prem, 2),
+                            "ann": round(ann_pct, 1),
+                            "is_safe": k_val > market_data[ticker]["resistance"]
+                        }
+
+    primary_market_data = {t: market_data[t] for t in primary_tickers if t in market_data}
 
     return {
-        "market": market_data,
+        "market": primary_market_data,
         "all_spots": all_spots,
         "puts": results_puts,
         "calls": results_calls,
