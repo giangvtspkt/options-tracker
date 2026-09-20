@@ -574,7 +574,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       });
 
       if (res.ok) {
-        renderPositionsAndPL();
+        // Do NOT aggressively call renderPositionsAndPL() here to prevent focus loss
+        // The background polling will gracefully update the UI shortly.
         if (field === 'exp' || field === 'ticker' || field === 'strike') {
           fetchData(true);
         }
@@ -985,7 +986,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
 
       elapsedSeconds = 0;
-      clearInterval(progressTimer);
+      if (progressTimer) clearInterval(progressTimer);
+      
       if (showSkeleton) {
         progressTimer = setInterval(() => {
           elapsedSeconds++;
@@ -999,7 +1001,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       try {
         const res = await fetch(`/api/data?tickers=${encodeURIComponent(tickers)}&contract_tickers=${encodeURIComponent(contractTickers.join(','))}&delta=${delta}`);
-        clearInterval(progressTimer);
+        if (progressTimer) clearInterval(progressTimer);
 
         if (!res.ok) throw new Error("API error " + res.status);
         const data = await res.json();
@@ -1014,7 +1016,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           status.innerHTML = `<span class="text-emerald-600 font-bold">✓ Live Updated</span> at ${new Date().toLocaleTimeString()}`;
         }
       } catch (err) {
-        clearInterval(progressTimer);
+        if (progressTimer) clearInterval(progressTimer);
         const localSaved = localStorage.getItem('cached_options_payload');
         if (localSaved) {
           try {
@@ -1092,7 +1094,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     function renderTable(elementId, results, tickers, targets, tableType, highIvPctileThreshold, headerNoticeId) {
       const headerNotice = document.getElementById(headerNoticeId);
-      if (headerNotice) headerNotice.classList.add('hidden');
+      if (headerNotice) headerNotice.classList.add('hidden'); // Clear banner state first
 
       const tbody = document.getElementById(elementId);
       tbody.innerHTML = '';
@@ -1186,8 +1188,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         if (hasHighIvInTable) {
           headerNotice.innerText = `🔥 High IVP ${tableType} Alert (&ge; ${highIvPctileThreshold}%ile)`;
           headerNotice.classList.remove('hidden');
-        } else {
-          headerNotice.classList.add('hidden');
         }
       }
 
@@ -1334,11 +1334,21 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
             prev_high = float(df_hist['High'].iloc[-2])
             prev_low = float(df_hist['Low'].iloc[-2])
             prev_close = float(df_hist['Close'].iloc[-2])
-            pivot = (prev_high + prev_low + prev_close) / 3.0
-            s1 = (2 * pivot) - prev_high
-            r1 = (2 * pivot) - prev_low
-            rolling_support = float(df_hist['Low'].min())
-            rolling_resistance = float(df_hist['High'].max())
+            
+            # Safe Fallback to prevent math.isnan crashing JSON stringify in Javascript
+            if math.isnan(prev_high) or math.isnan(prev_low) or math.isnan(prev_close):
+                s1, r1 = spot_price * 0.95, spot_price * 1.05
+                rolling_support, rolling_resistance = spot_price * 0.90, spot_price * 1.10
+            else:
+                pivot = (prev_high + prev_low + prev_close) / 3.0
+                s1 = (2 * pivot) - prev_high
+                r1 = (2 * pivot) - prev_low
+                rolling_support = float(df_hist['Low'].min())
+                rolling_resistance = float(df_hist['High'].max())
+                
+                # Double check bounds for safety
+                if math.isnan(rolling_support): rolling_support = spot_price * 0.90
+                if math.isnan(rolling_resistance): rolling_resistance = spot_price * 1.10
         else:
             s1, r1 = spot_price * 0.95, spot_price * 1.05
             rolling_support, rolling_resistance = spot_price * 0.90, spot_price * 1.10
@@ -1432,11 +1442,14 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                     for _, row in puts.iterrows():
                         try:
                             K = float(row['strike'])
-                            iv = float(row.get('impliedVolatility', 0.45) or 0.45)
-                            d = calc_put_delta(spot_price, K, T, r, sigma=iv)
+                            # Safe retrieval to prevent math.isnan crashing JSON stringify in Javascript
+                            iv_raw = row.get('impliedVolatility', 0.45)
+                            iv_val = 0.45 if iv_raw is None or math.isnan(float(iv_raw)) else float(iv_raw)
+                            
+                            d = calc_put_delta(spot_price, K, T, r, sigma=iv_val)
                             if abs(d - (-delta)) < min_p_diff:
                                 min_p_diff = abs(d - (-delta))
-                                best_put = (row, K, iv)
+                                best_put = (row, K, iv_val)
                         except Exception:
                             continue
 
@@ -1469,11 +1482,14 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                     for _, row in calls.iterrows():
                         try:
                             K = float(row['strike'])
-                            iv = float(row.get('impliedVolatility', 0.45) or 0.45)
-                            d = calc_call_delta(spot_price, K, T, r, sigma=iv)
+                            # Safe retrieval to prevent math.isnan crashing JSON stringify in Javascript
+                            iv_raw = row.get('impliedVolatility', 0.45)
+                            iv_val = 0.45 if iv_raw is None or math.isnan(float(iv_raw)) else float(iv_raw)
+                            
+                            d = calc_call_delta(spot_price, K, T, r, sigma=iv_val)
                             if abs(d - delta) < min_c_diff:
                                 min_c_diff = abs(d - delta)
-                                best_call = (row, K, iv)
+                                best_call = (row, K, iv_val)
                         except Exception:
                             continue
 
