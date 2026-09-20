@@ -328,7 +328,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         <input id="delta" type="number" step="0.01" value="0.2" class="w-full border rounded p-2 text-sm font-semibold">
       </div>
     </div>
-    <button onclick="fetchData()" id="refreshBtn" class="bg-blue-600 active:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg text-sm w-full mt-1 flex items-center justify-center gap-2">
+    <button onclick="fetchData(false)" id="refreshBtn" class="bg-blue-600 active:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg text-sm w-full mt-1 flex items-center justify-center gap-2">
       <span id="btnSpinner" class="hidden animate-spin h-3.5 w-3.5 border-2 border-white border-t-transparent rounded-full"></span>
       <span id="btnText">Refresh Data</span>
     </button>
@@ -403,6 +403,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     let progressTimer = null;
     let elapsedSeconds = 0;
     let hideExpired = localStorage.getItem('hideExpiredContracts') === 'true';
+    let hasLoadedOnce = false;
 
     const DEFAULT_ALERT_CRITERIA = {
       putWarnPct: 3.0,
@@ -516,7 +517,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (res.ok) {
         toggleAddForm();
         await loadCloudPositions();
-        fetchData();
+        fetchData(false);
       } else {
         alert('Could not save to GitHub. Check environment variables.');
       }
@@ -543,9 +544,8 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       if (res.ok) {
         renderPositionsAndPL();
-        // If expiration or ticker changed, trigger a background refresh
         if (field === 'exp' || field === 'ticker' || field === 'strike') {
-          fetchData();
+          fetchData(true);
         }
       } else {
         alert('Failed to update field on GitHub.');
@@ -906,24 +906,31 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
     }
 
-    async function fetchData() {
+    async function fetchData(isSilent = false) {
       const btn = document.getElementById('refreshBtn');
       const spinner = document.getElementById('btnSpinner');
       const btnText = document.getElementById('btnText');
       const status = document.getElementById('status');
 
-      btn.disabled = true;
-      spinner.classList.remove('hidden');
-      btnText.innerText = "Loading...";
-
-      renderLoadingSkeleton();
+      // Only show the skeleton loader if it's the very first load or a manual click
+      const showSkeleton = !hasLoadedOnce || !isSilent;
+      if (showSkeleton) {
+        btn.disabled = true;
+        spinner.classList.remove('hidden');
+        btnText.innerText = "Loading...";
+        renderLoadingSkeleton();
+      } else {
+        status.innerHTML = `<span class="text-blue-600 font-medium animate-pulse">Syncing in background...</span>`;
+      }
 
       elapsedSeconds = 0;
       clearInterval(progressTimer);
-      progressTimer = setInterval(() => {
-        elapsedSeconds++;
-        status.innerText = `⏳ Contacting Yahoo Finance (${elapsedSeconds}s)...`;
-      }, 1000);
+      if (showSkeleton) {
+        progressTimer = setInterval(() => {
+          elapsedSeconds++;
+          status.innerText = `⏳ Contacting Yahoo Finance (${elapsedSeconds}s)...`;
+        }, 1000);
+      }
 
       const tickers = document.getElementById('tickers').value;
       const delta = document.getElementById('delta').value;
@@ -938,11 +945,12 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         localStorage.setItem('cached_options_payload', JSON.stringify(data));
         applyDataPayload(data);
+        hasLoadedOnce = true;
 
         if (data.is_cached) {
-          status.innerHTML = `<span class="text-amber-600 font-bold">⚠️ Using Cached Data</span> (${elapsedSeconds}s)`;
+          status.innerHTML = `<span class="text-amber-600 font-bold">⚠️ Using Cached Data</span>`;
         } else {
-          status.innerHTML = `<span class="text-emerald-600 font-bold">✓ Live Updated</span> at ${new Date().toLocaleTimeString()} (${elapsedSeconds}s)`;
+          status.innerHTML = `<span class="text-emerald-600 font-bold">✓ Live Updated</span> at ${new Date().toLocaleTimeString()}`;
         }
       } catch (err) {
         clearInterval(progressTimer);
@@ -953,14 +961,17 @@ HTML_CONTENT = """<!DOCTYPE html>
             fallbackData.is_cached = true;
             fallbackData.cached_at = "Browser Local Backup";
             applyDataPayload(fallbackData);
+            hasLoadedOnce = true;
             status.innerHTML = `<span class="text-amber-600 font-bold">⚠️ Using Browser Backup Cache</span>`;
             return;
           } catch(e) {}
         }
 
         status.innerHTML = `<span class="text-rose-600 font-bold">✕ Yahoo Finance Unreachable.</span> Please retry.`;
-        document.getElementById('putsBody').innerHTML = `<tr><td class="p-3 text-center text-rose-500 font-semibold">Failed to load Put chain: Network or rate limit issue.</td></tr>`;
-        document.getElementById('callsBody').innerHTML = `<tr><td class="p-3 text-center text-rose-500 font-semibold">Failed to load Call chain: Network or rate limit issue.</td></tr>`;
+        if (showSkeleton) {
+          document.getElementById('putsBody').innerHTML = `<tr><td class="p-3 text-center text-rose-500 font-semibold">Failed to load Put chain: Network or rate limit issue.</td></tr>`;
+          document.getElementById('callsBody').innerHTML = `<tr><td class="p-3 text-center text-rose-500 font-semibold">Failed to load Call chain: Network or rate limit issue.</td></tr>`;
+        }
       } finally {
         btn.disabled = false;
         spinner.classList.add('hidden');
@@ -1108,8 +1119,10 @@ HTML_CONTENT = """<!DOCTYPE html>
     (async () => {
       loadAlertCriteria();
       await loadCloudPositions();
-      fetchData();
-      setInterval(fetchData, 60000);
+      // First load shows full loader
+      await fetchData(false);
+      // Background interval runs completely silent without overriding tables with skeletons
+      setInterval(() => fetchData(true), 60000);
     })();
   </script>
 </body>
