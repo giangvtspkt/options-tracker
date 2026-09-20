@@ -189,13 +189,18 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Open Contracts & CSP Capital Summary -->
+    <!-- Open Contracts & CSP Capital Requirement (Per Broker & Total) -->
     <div class="bg-slate-50 border border-slate-200 rounded-lg p-2.5 mb-3">
-      <div class="text-[11px] font-bold text-slate-600 mb-1.5 flex flex-wrap items-center justify-between gap-2">
-        <span>📊 Open Contracts &amp; CSP Capital Requirement</span>
-        <div class="flex items-center gap-3 text-[10px] font-semibold">
-          <span id="totalOpenQty" class="text-slate-600">Total Open: 0 contracts</span>
-          <span id="totalCspCapital" class="text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded font-mono font-bold">Total CSP Req: $0.00</span>
+      <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+        <div class="flex items-center gap-2">
+          <span class="text-[11px] font-bold text-slate-700">📊 Open Contracts &amp; CSP Capital Requirement</span>
+          <span id="totalOpenQty" class="text-[10px] font-semibold text-slate-500 bg-slate-200/70 px-1.5 py-0.5 rounded">Total Open: 0</span>
+        </div>
+        <!-- Broker Capital Summary Badges -->
+        <div class="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
+          <span id="moomooCspCapital" class="text-orange-800 bg-orange-100 border border-orange-200 px-2 py-0.5 rounded font-bold">Moomoo: $0</span>
+          <span id="ibkrCspCapital" class="text-blue-800 bg-blue-100 border border-blue-200 px-2 py-0.5 rounded font-bold">IBKR: $0</span>
+          <span id="totalCspCapital" class="text-emerald-800 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded font-extrabold">Total CSP: $0.00</span>
         </div>
       </div>
       <div id="openSummaryCards" class="flex flex-wrap gap-2">
@@ -265,7 +270,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Contract Positions Table -->
+    <!-- Contract Positions Table with Broker Column -->
     <div class="overflow-x-auto border border-slate-200 rounded-lg">
       <table class="w-full text-left text-[10px]">
         <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold">
@@ -562,20 +567,33 @@ HTML_CONTENT = """<!DOCTYPE html>
       const openStats = {};
       let totalOpenCount = 0;
       let totalCspCapital = 0;
+      let moomooCspCapital = 0;
+      let ibkrCspCapital = 0;
 
       cloudPositions.forEach(p => {
         const isExpired = p.exp < todayStr;
         if (!isExpired) {
           totalOpenCount += p.qty;
+          const broker = (p.broker || 'moomoo').toLowerCase();
+
           if (!openStats[p.ticker]) {
-            openStats[p.ticker] = { total: 0, puts: 0, calls: 0, cspCapital: 0 };
+            openStats[p.ticker] = { total: 0, puts: 0, calls: 0, cspCapital: 0, moomooCsp: 0, ibkrCsp: 0 };
           }
           openStats[p.ticker].total += p.qty;
+
           if (p.type === 'PUT') {
             openStats[p.ticker].puts += p.qty;
             const cap = p.strike * 100 * p.qty;
             openStats[p.ticker].cspCapital += cap;
             totalCspCapital += cap;
+
+            if (broker === 'moomoo') {
+              moomooCspCapital += cap;
+              openStats[p.ticker].moomooCsp += cap;
+            } else if (broker === 'ibkr') {
+              ibkrCspCapital += cap;
+              openStats[p.ticker].ibkrCsp += cap;
+            }
           } else if (p.type === 'CALL') {
             openStats[p.ticker].calls += p.qty;
           }
@@ -584,7 +602,11 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       const summaryContainer = document.getElementById('openSummaryCards');
       document.getElementById('totalOpenQty').innerText = `Total Open: ${totalOpenCount} contracts`;
-      document.getElementById('totalCspCapital').innerText = `Total CSP Req: $${totalCspCapital.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      
+      const fmtCurrency = (val) => `$${val.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+      document.getElementById('moomooCspCapital').innerText = `Moomoo CSP: ${fmtCurrency(moomooCspCapital)}`;
+      document.getElementById('ibkrCspCapital').innerText = `IBKR CSP: ${fmtCurrency(ibkrCspCapital)}`;
+      document.getElementById('totalCspCapital').innerText = `Total CSP: ${fmtCurrency(totalCspCapital)}`;
 
       const openTickers = Object.keys(openStats);
       if (openTickers.length === 0) {
@@ -596,15 +618,19 @@ HTML_CONTENT = """<!DOCTYPE html>
           const card = document.createElement('div');
           card.className = "bg-white border border-slate-200 rounded px-2.5 py-1 text-[10px] flex items-center gap-2 shadow-xs";
           
-          const cspCapStr = s.cspCapital > 0 
-            ? `<span class="text-emerald-700 font-bold bg-emerald-50 px-1 rounded border border-emerald-200">CSP Req: $${s.cspCapital.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>`
-            : '';
+          let cspBadges = '';
+          if (s.cspCapital > 0) {
+            const parts = [];
+            if (s.moomooCsp > 0) parts.push(`<span class="text-orange-700 font-bold">Moo: ${fmtCurrency(s.moomooCsp)}</span>`);
+            if (s.ibkrCsp > 0) parts.push(`<span class="text-blue-700 font-bold">IB: ${fmtCurrency(s.ibkrCsp)}</span>`);
+            cspBadges = `<div class="bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded flex items-center gap-1 font-mono">${parts.join(' | ')}</div>`;
+          }
 
           card.innerHTML = `
             <span class="font-bold text-slate-800">${t}:</span>
             <span class="font-extrabold text-blue-700">${s.total}</span>
             <span class="text-[9px] text-slate-400 font-mono">(${s.puts}P / ${s.calls}C)</span>
-            ${cspCapStr}
+            ${cspBadges}
           `;
           summaryContainer.appendChild(card);
         });
@@ -1002,7 +1028,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
     }
 
-    // Await initial positions so contract tickers are never missed on first fetch
     (async () => {
       loadAlertCriteria();
       await loadCloudPositions();
@@ -1168,7 +1193,6 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
             except Exception:
                 continue
 
-        # Look up Live Mark for all user contracts
         for p in positions:
             if p.get("ticker", "").upper() == ticker and p.get("exp") in loaded_chains:
                 chain = loaded_chains[p["exp"]]
@@ -1183,7 +1207,6 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                     last_p = float(row_data.get("lastPrice", 0) or 0)
                     mark = ask if ask > 0 else (last_p if last_p > 0 else (bid if bid > 0 else 0.0))
                     
-                    # Consistent user-strike formatted key
                     contract_key = f"{ticker}_{p['exp']}_{float(p.get('strike', 0)):.2f}_{p['type'].upper()}"
                     live_positions[contract_key] = round(mark, 2)
 
@@ -1262,16 +1285,16 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                         ann_pct = yield_pct * 252 / actual_b_days
                         pct_diff = ((k_val - spot_price) / spot_price) * 100
 
-                    results_calls[str(target)][ticker] = {
-                        "raw_exp": exp,
-                        "exp": exp_stacked,
-                        "strike": round(k_val, 2),
-                        "pct_diff": f"{pct_diff:+.1f}%",
-                        "iv": round((iv_val or 0.45) * 100, 1),
-                        "prem": round(prem, 2),
-                        "ann": round(ann_pct, 1),
-                        "is_safe": k_val > market_data[ticker]["resistance"]
-                    }
+                        results_calls[str(target)][ticker] = {
+                            "raw_exp": exp,
+                            "exp": exp_stacked,
+                            "strike": round(k_val, 2),
+                            "pct_diff": f"{pct_diff:+.1f}%",
+                            "iv": round((iv_val or 0.45) * 100, 1),
+                            "prem": round(prem, 2),
+                            "ann": round(ann_pct, 1),
+                            "is_safe": k_val > market_data[ticker]["resistance"]
+                        }
 
     primary_market_data = {t: market_data[t] for t in primary_tickers if t in market_data}
 
