@@ -15,7 +15,6 @@ app = FastAPI()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
-# Safe writable directory on Render Linux containers
 CACHE_FILE_PATH = os.path.join(tempfile.gettempdir(), "options_cache_data.json")
 
 def norm_cdf(x):
@@ -292,7 +291,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Contract Positions Table -->
+    <!-- Contract Positions Table with Same Format for Trade Day & Exp -->
     <div class="overflow-x-auto border border-slate-200 rounded-lg">
       <table class="w-full text-left text-[10px]">
         <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold">
@@ -301,7 +300,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             <th class="p-1.5 border-r">Pos</th>
             <th class="p-1.5 border-r">Contract</th>
             <th class="p-1.5 border-r">Trade Day ✎</th>
-            <th class="p-1.5 border-r">Exp ▲</th>
+            <th class="p-1.5 border-r">Exp ✎</th>
             <th class="p-1.5 border-r">Entry</th>
             <th class="p-1.5 border-r">Live Mark</th>
             <th class="p-1.5 border-r font-extrabold text-blue-900 bg-blue-50/70">Current P/L ($)</th>
@@ -544,6 +543,10 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       if (res.ok) {
         renderPositionsAndPL();
+        // If expiration or ticker changed, trigger a background refresh
+        if (field === 'exp' || field === 'ticker' || field === 'strike') {
+          fetchData();
+        }
       } else {
         alert('Failed to update field on GitHub.');
       }
@@ -572,7 +575,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       const currentMonthPositions = [];
       cloudPositions.forEach(p => {
-        const parts = p.exp.split('-');
+        const parts = (p.exp || '').split('-');
         const pYear = parseInt(parts[0], 10);
         const pMonth = parseInt(parts[1], 10) - 1;
         if (pYear > currentYear || (pYear === currentYear && pMonth >= currentMonth)) {
@@ -672,7 +675,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       const posColorMap = {};
 
       currentMonthPositions.forEach(p => {
-        const parts = p.exp.split('-');
+        const parts = (p.exp || '').split('-');
         const pYear = parseInt(parts[0], 10);
         const pMonth = parseInt(parts[1], 10) - 1;
         const isExpired = p.exp < todayStr;
@@ -682,7 +685,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           : ((globalData && globalData.market && globalData.market[p.ticker]) ? globalData.market[p.ticker].spot : null);
 
         const strikeFormatted = parseFloat(p.strike).toFixed(2);
-        const contractKey = `${p.ticker.toUpperCase()}_${p.exp}_${strikeFormatted}_${p.type.toUpperCase()}`;
+        const contractKey = `${p.ticker.trim().toUpperCase()}_${p.exp.trim()}_${strikeFormatted}_${p.type.trim().toUpperCase()}`;
 
         const liveMark = (globalData && globalData.live_positions && globalData.live_positions[contractKey] !== undefined)
           ? globalData.live_positions[contractKey]
@@ -768,7 +771,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           const curPlColor = currentPl >= 0 ? 'text-emerald-700' : 'text-rose-700';
           const curPlPrefix = currentPl >= 0 ? '+$' : '-$';
 
-          let curPlDisplay = '<span class="text-slate-400 font-normal">Syncing...</span>';
+          let curPlDisplay = '<span class="text-slate-400 font-normal">Pending Quote</span>';
           if (isExpired || liveMark !== null) {
             let pctSpan = '';
             if (maxPl !== 0) {
@@ -793,6 +796,8 @@ HTML_CONTENT = """<!DOCTYPE html>
               spotSubtext = `<span class="block text-[8.5px] font-mono leading-tight ${spotColor}">$${spot.toFixed(2)} (${sign}${diffPct.toFixed(1)}%)</span>`;
             }
             markDisplay = `<div><span class="font-mono font-medium text-slate-800">$${liveMark.toFixed(2)}</span>${spotSubtext}</div>`;
+          } else {
+            markDisplay = '<span class="text-amber-500 font-normal">No Quote</span>';
           }
 
           const actionBadge = p.action === 'SELL'
@@ -801,6 +806,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
           const rowBg = getExpColor(p.exp, posColorMap);
           const curTradeDate = p.trade_date || '';
+          const curExpDate = p.exp || '';
           const curBroker = (p.broker || 'moomoo').toLowerCase();
 
           const tr = document.createElement('tr');
@@ -820,7 +826,11 @@ HTML_CONTENT = """<!DOCTYPE html>
                 onchange="updatePositionField(${p.id}, 'trade_date', this.value)"
                 class="border rounded px-1 py-0.5 bg-white font-mono text-[9px] text-slate-700">
             </td>
-            <td class="p-1.5 border-r whitespace-nowrap text-slate-700 font-mono font-bold">${p.exp}</td>
+            <td class="p-1 border-r whitespace-nowrap">
+              <input type="date" value="${curExpDate}"
+                onchange="updatePositionField(${p.id}, 'exp', this.value)"
+                class="border rounded px-1 py-0.5 bg-white font-mono text-[9px] font-bold text-slate-700">
+            </td>
             <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
             <td class="p-1.5 border-r whitespace-nowrap">${markDisplay}</td>
             <td class="p-1.5 border-r whitespace-nowrap font-mono font-extrabold bg-blue-50/40 ${curPlColor}">${curPlDisplay}</td>
@@ -1165,7 +1175,6 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
     target_periods = [7, 14, 21, 30]
     today = datetime.date.today()
 
-    # Pre-populate state from cache
     market_data = cache_store.get("market", {}).copy()
     all_spots = cache_store.get("all_spots", {}).copy()
     results_puts = cache_store.get("puts", {str(t): {} for t in target_periods}).copy()
@@ -1256,7 +1265,8 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
 
         needed_exps = set(target_to_exp.values())
         for p in positions:
-            if p.get("ticker", "").upper() == ticker and p.get("exp") in expirations:
+            p_tkr = str(p.get("ticker", "")).strip().upper()
+            if p_tkr == ticker and p.get("exp") in expirations:
                 needed_exps.add(p["exp"])
 
         loaded_chains = {}
@@ -1267,21 +1277,27 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                 continue
 
         for p in positions:
-            if p.get("ticker", "").upper() == ticker and p.get("exp") in loaded_chains:
-                chain = loaded_chains[p["exp"]]
-                df_opts = chain.puts if p.get("type", "").upper() == "PUT" else chain.calls
-                k_target = float(p.get("strike", 0))
+            p_tkr = str(p.get("ticker", "")).strip().upper()
+            p_exp = str(p.get("exp", "")).strip()
+            p_type = str(p.get("type", "")).strip().upper()
+            k_target = float(p.get("strike", 0))
+
+            if p_tkr == ticker and p_exp in loaded_chains:
+                chain = loaded_chains[p_exp]
+                df_opts = chain.puts if p_type == "PUT" else chain.calls
                 
-                match = df_opts[abs(df_opts["strike"] - k_target) < 0.05]
-                if not match.empty:
-                    row_data = match.iloc[0]
-                    ask = float(row_data.get("ask", 0) or 0)
-                    bid = float(row_data.get("bid", 0) or 0)
-                    last_p = float(row_data.get("lastPrice", 0) or 0)
-                    mark = ask if ask > 0 else (last_p if last_p > 0 else (bid if bid > 0 else 0.0))
-                    
-                    contract_key = f"{ticker}_{p['exp']}_{float(p.get('strike', 0)):.2f}_{p['type'].upper()}"
-                    live_positions[contract_key] = round(mark, 2)
+                if df_opts is not None and not df_opts.empty:
+                    diffs = (df_opts["strike"] - k_target).abs()
+                    min_idx = diffs.idxmin()
+                    if diffs.loc[min_idx] <= 0.5:
+                        row_data = df_opts.loc[min_idx]
+                        ask = float(row_data.get("ask", 0) or 0)
+                        bid = float(row_data.get("bid", 0) or 0)
+                        last_p = float(row_data.get("lastPrice", 0) or 0)
+                        mark = ask if ask > 0 else (last_p if last_p > 0 else (bid if bid > 0 else 0.01))
+                        
+                        contract_key = f"{p_tkr}_{p_exp}_{k_target:.2f}_{p_type}"
+                        live_positions[contract_key] = round(mark, 2)
 
         if is_primary:
             for target, exp in target_to_exp.items():
