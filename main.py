@@ -14,6 +14,7 @@ app = FastAPI()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
+CACHE_FILE_PATH = "cache_data.json"
 
 def norm_cdf(x):
     return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
@@ -83,6 +84,22 @@ def save_positions_to_github(positions):
     except Exception:
         return False
 
+def load_cached_data():
+    if os.path.exists(CACHE_FILE_PATH):
+        try:
+            with open(CACHE_FILE_PATH, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_cached_data(cache):
+    try:
+        with open(CACHE_FILE_PATH, "w") as f:
+            json.dump(cache, f, indent=2)
+    except Exception:
+        pass
+
 class PositionModel(BaseModel):
     id: int
     action: str
@@ -100,15 +117,16 @@ HTML_CONTENT = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Options Tracker (Cloud Sync)</title>
+  <title>Options Tracker (Cloud Sync &amp; Fallback Cache)</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-100 text-slate-800 p-2.5 sm:p-4 font-sans text-xs">
 
   <!-- Diagnostic Alert Banner -->
   <div id="diagBanner" class="hidden bg-amber-50 border border-amber-300 rounded-xl p-3 mb-3 text-amber-900">
-    <div class="font-bold flex items-center gap-1.5 text-xs mb-1">
-      <span>⚠️</span> System Notice: Option Chain Data Incomplete
+    <div class="font-bold flex items-center justify-between text-xs mb-1">
+      <span class="flex items-center gap-1.5"><span>⚠️</span> <span id="diagTitle">Notice</span></span>
+      <span id="cacheTimestampBadge" class="text-[9px] font-mono bg-amber-200/70 px-1.5 py-0.5 rounded text-amber-900 hidden"></span>
     </div>
     <ul id="diagList" class="list-disc list-inside space-y-0.5 text-[11px] text-amber-800"></ul>
   </div>
@@ -189,14 +207,13 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Open Contracts & CSP Capital Requirement (Per Broker & Total) -->
+    <!-- Open Contracts & CSP Capital Summary -->
     <div class="bg-slate-50 border border-slate-200 rounded-lg p-2.5 mb-3">
       <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
         <div class="flex items-center gap-2">
           <span class="text-[11px] font-bold text-slate-700">📊 Open Contracts &amp; CSP Capital Requirement</span>
           <span id="totalOpenQty" class="text-[10px] font-semibold text-slate-500 bg-slate-200/70 px-1.5 py-0.5 rounded">Total Open: 0</span>
         </div>
-        <!-- Broker Capital Summary Badges -->
         <div class="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
           <span id="moomooCspCapital" class="text-orange-800 bg-orange-100 border border-orange-200 px-2 py-0.5 rounded font-bold">Moomoo: $0</span>
           <span id="ibkrCspCapital" class="text-blue-800 bg-blue-100 border border-blue-200 px-2 py-0.5 rounded font-bold">IBKR: $0</span>
@@ -270,7 +287,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Contract Positions Table with Broker Column -->
+    <!-- Contract Positions Table -->
     <div class="overflow-x-auto border border-slate-200 rounded-lg">
       <table class="w-full text-left text-[10px]">
         <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold">
@@ -757,9 +774,23 @@ HTML_CONTENT = """<!DOCTYPE html>
             curPlDisplay = `<div>${curPlPrefix}${Math.abs(currentPl).toFixed(2)}${pctSpan}</div>`;
           }
 
-          const markDisplay = (liveMark !== null)
-            ? `$${liveMark.toFixed(2)}`
-            : (isExpired ? '<span class="text-slate-400">$0.00</span>' : '<span class="text-slate-400 font-normal">-</span>');
+          // Format Live Mark with Current Stock Spot Price and % vs Strike
+          let markDisplay = '<span class="text-slate-400 font-normal">-</span>';
+          if (isExpired) {
+            markDisplay = '<span class="text-slate-400 font-mono">$0.00</span>';
+          } else if (liveMark !== null) {
+            let spotSubtext = '';
+            if (spot !== null && spot !== undefined && p.strike > 0) {
+              const diffPct = ((spot - p.strike) / p.strike) * 100;
+              const isPut = (p.type === 'PUT');
+              // For Puts: spot > strike is safe/green (OTM). For Calls: spot < strike is safe/green (OTM)
+              const isSafe = isPut ? (spot >= p.strike) : (spot <= p.strike);
+              const spotColor = isSafe ? 'text-emerald-600' : 'text-rose-600 font-bold';
+              const sign = diffPct > 0 ? '+' : '';
+              spotSubtext = `<span class="block text-[8.5px] font-mono leading-tight ${spotColor}">$${spot.toFixed(2)} (${sign}${diffPct.toFixed(1)}%)</span>`;
+            }
+            markDisplay = `<div><span class="font-mono font-medium text-slate-800">$${liveMark.toFixed(2)}</span>${spotSubtext}</div>`;
+          }
 
           const actionBadge = p.action === 'SELL'
             ? '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">SELL</span>'
@@ -788,7 +819,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             </td>
             <td class="p-1.5 border-r whitespace-nowrap text-slate-700 font-mono font-bold">${p.exp}</td>
             <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
-            <td class="p-1.5 border-r whitespace-nowrap font-mono font-medium text-slate-700">${markDisplay}</td>
+            <td class="p-1.5 border-r whitespace-nowrap">${markDisplay}</td>
             <td class="p-1.5 border-r whitespace-nowrap font-mono font-extrabold bg-blue-50/40 ${curPlColor}">${curPlDisplay}</td>
             <td class="p-1.5 border-r whitespace-nowrap font-mono font-bold ${maxPlColor}">${maxPlDisplay}</td>
             <td class="p-1.5 border-r whitespace-nowrap">${statusHtml}</td>
@@ -825,7 +856,41 @@ HTML_CONTENT = """<!DOCTYPE html>
       document.getElementById('levelsBody').innerHTML = `
         <tr><td colspan="8" class="p-3 text-center text-slate-500 animate-pulse">Calculating spot &amp; pivot levels...</td></tr>
       `;
-      document.getElementById('diagBanner').classList.add('hidden');
+    }
+
+    function applyDataPayload(data) {
+      globalData = data;
+      renderLevelsTable(globalData.market);
+      renderPills(globalData.tickers);
+      renderBothTables();
+      renderPositionsAndPL();
+
+      const diagBanner = document.getElementById('diagBanner');
+      const diagList = document.getElementById('diagList');
+      const diagTitle = document.getElementById('diagTitle');
+      const cacheBadge = document.getElementById('cacheTimestampBadge');
+      diagList.innerHTML = '';
+
+      if (globalData.is_cached) {
+        diagBanner.classList.remove('hidden');
+        diagTitle.innerText = "Yahoo Finance Unreachable: Displaying Cached Data";
+        cacheBadge.innerText = `Cached: ${globalData.cached_at || 'Recent'}`;
+        cacheBadge.classList.remove('hidden');
+        const li = document.createElement('li');
+        li.innerText = "Real-time updates are temporarily unavailable. Market quotes and live marks reflect the last successful fetch.";
+        diagList.appendChild(li);
+      } else if (globalData.diagnostics && Object.keys(globalData.diagnostics).length > 0) {
+        diagBanner.classList.remove('hidden');
+        diagTitle.innerText = "Notice: Option Chain Incomplete";
+        cacheBadge.classList.add('hidden');
+        Object.entries(globalData.diagnostics).forEach(([tkr, msg]) => {
+          const li = document.createElement('li');
+          li.innerHTML = `<span class="font-bold">${tkr}:</span> ${msg}`;
+          diagList.appendChild(li);
+        });
+      } else {
+        diagBanner.classList.add('hidden');
+      }
     }
 
     async function fetchData() {
@@ -849,7 +914,6 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       const tickers = document.getElementById('tickers').value;
       const delta = document.getElementById('delta').value;
-
       const contractTickers = Array.from(new Set(cloudPositions.map(p => (p.ticker || '').trim().toUpperCase()))).filter(Boolean);
 
       try {
@@ -857,31 +921,31 @@ HTML_CONTENT = """<!DOCTYPE html>
         clearInterval(progressTimer);
 
         if (!res.ok) throw new Error("API error " + res.status);
-        globalData = await res.json();
+        const data = await res.json();
 
-        const diagBanner = document.getElementById('diagBanner');
-        const diagList = document.getElementById('diagList');
-        diagList.innerHTML = '';
-        if (globalData.diagnostics && Object.keys(globalData.diagnostics).length > 0) {
-          diagBanner.classList.remove('hidden');
-          Object.entries(globalData.diagnostics).forEach(([tkr, msg]) => {
-            const li = document.createElement('li');
-            li.innerHTML = `<span class="font-bold">${tkr}:</span> ${msg}`;
-            diagList.appendChild(li);
-          });
+        localStorage.setItem('cached_options_payload', JSON.stringify(data));
+        applyDataPayload(data);
+
+        if (data.is_cached) {
+          status.innerHTML = `<span class="text-amber-600 font-bold">⚠️ Using Cached Data</span> (${elapsedSeconds}s)`;
         } else {
-          diagBanner.classList.add('hidden');
+          status.innerHTML = `<span class="text-emerald-600 font-bold">✓ Live Updated</span> at ${new Date().toLocaleTimeString()} (${elapsedSeconds}s)`;
         }
-
-        renderLevelsTable(globalData.market);
-        renderPills(globalData.tickers);
-        renderBothTables();
-        renderPositionsAndPL();
-
-        status.innerHTML = `<span class="text-emerald-600 font-bold">✓ Updated</span> at ${new Date().toLocaleTimeString()} (${elapsedSeconds}s)`;
       } catch (err) {
         clearInterval(progressTimer);
-        status.innerHTML = `<span class="text-rose-600 font-bold">✕ Yahoo Finance did not respond.</span> Please retry.`;
+        const localSaved = localStorage.getItem('cached_options_payload');
+        if (localSaved) {
+          try {
+            const fallbackData = JSON.parse(localSaved);
+            fallbackData.is_cached = true;
+            fallbackData.cached_at = "Browser Local Backup";
+            applyDataPayload(fallbackData);
+            status.innerHTML = `<span class="text-amber-600 font-bold">⚠️ Using Browser Backup Cache</span>`;
+            return;
+          } catch(e) {}
+        }
+
+        status.innerHTML = `<span class="text-rose-600 font-bold">✕ Yahoo Finance Unreachable.</span> Please retry.`;
         document.getElementById('putsBody').innerHTML = `<tr><td class="p-3 text-center text-rose-500 font-semibold">Failed to load Put chain: Network or rate limit issue.</td></tr>`;
         document.getElementById('callsBody').innerHTML = `<tr><td class="p-3 text-center text-rose-500 font-semibold">Failed to load Call chain: Network or rate limit issue.</td></tr>`;
       } finally {
@@ -914,7 +978,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       tbody.innerHTML = '';
       const entries = Object.entries(market || {});
       if (entries.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" class="p-3 text-center text-rose-500 font-semibold">No ticker quotes returned. Check the Diagnostic Notice above.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8" class="p-3 text-center text-rose-500 font-semibold">No ticker quotes returned.</td></tr>`;
         return;
       }
       entries.forEach(([ticker, m]) => {
@@ -1021,7 +1085,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         tbody.innerHTML += `
           <tr>
             <td colspan="${1 + tickers.length * 5}" class="p-2.5 bg-amber-50 text-amber-800 text-center text-[10px]">
-              No ${tableType} contracts matched the target delta or business-day windows. Refer to the diagnostic banner above for details.
+              No ${tableType} contracts matched the target delta or business-day windows.
             </td>
           </tr>
         `;
@@ -1081,10 +1145,11 @@ def remove_position(pos_id: int):
 @app.get("/api/data")
 def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", delta: float = 0.2):
     positions, _ = get_positions_from_github()
+    cache_store = load_cached_data()
     
     primary_tickers = [t.strip().upper() for t in tickers.split(",") if t.strip()]
-
     combined_ticker_set = set(primary_tickers)
+
     for t in contract_tickers.split(","):
         if t.strip():
             combined_ticker_set.add(t.strip().upper())
@@ -1103,13 +1168,17 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
     results_calls = {str(t): {} for t in target_periods}
     live_positions = {}
     diagnostics = {}
+    
+    successful_fetches = 0
 
     for ticker in combined_ticker_list:
         is_primary = ticker in primary_tickers
+        spot_price = 0.0
+        expirations = []
+        df_hist = None
+
         try:
             tkr = yf.Ticker(ticker)
-            spot_price = 0.0
-
             try:
                 if hasattr(tkr, 'fast_info'):
                     spot_price = float(tkr.fast_info.get('last_price') or tkr.fast_info.get('lastPrice') or 0.0)
@@ -1121,24 +1190,31 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                 if not hist_1d.empty:
                     spot_price = float(hist_1d['Close'].iloc[-1])
 
-            if not spot_price or spot_price <= 0:
-                if is_primary:
-                    diagnostics[ticker] = "Could not fetch spot price from Yahoo Finance"
-                continue
-
-            all_spots[ticker] = round(spot_price, 2)
             expirations = list(tkr.options) if tkr.options else []
-            if not expirations and is_primary:
-                diagnostics[ticker] = f"No option expiration dates returned for spot ${spot_price:.2f}"
-                continue
-
             df_hist = tkr.history(period="30d")
+            if spot_price > 0:
+                successful_fetches += 1
         except Exception as e:
             if is_primary:
-                diagnostics[ticker] = f"Error reading Yahoo Finance: {str(e)}"
+                diagnostics[ticker] = f"Error reaching Yahoo Finance: {str(e)}"
+
+        if (not spot_price or spot_price <= 0) and ticker in cache_store.get("all_spots", {}):
+            all_spots[ticker] = cache_store["all_spots"][ticker]
+            if ticker in cache_store.get("market", {}):
+                market_data[ticker] = cache_store["market"][ticker]
             continue
 
-        if not df_hist.empty and len(df_hist) >= 2:
+        if not spot_price or spot_price <= 0:
+            if is_primary:
+                diagnostics[ticker] = "Could not fetch spot price"
+            continue
+
+        all_spots[ticker] = round(spot_price, 2)
+        if not expirations and is_primary:
+            diagnostics[ticker] = f"No option expiration dates returned for spot ${spot_price:.2f}"
+            continue
+
+        if df_hist is not None and not df_hist.empty and len(df_hist) >= 2:
             prev_high = float(df_hist['High'].iloc[-2])
             prev_low = float(df_hist['Low'].iloc[-2])
             prev_close = float(df_hist['Close'].iloc[-2])
@@ -1296,9 +1372,13 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                             "is_safe": k_val > market_data[ticker]["resistance"]
                         }
 
-    primary_market_data = {t: market_data[t] for t in primary_tickers if t in market_data}
+    if successful_fetches == 0 and cache_store:
+        cache_store["is_cached"] = True
+        return cache_store
 
-    return {
+    primary_market_data = {t: market_data[t] for t in primary_tickers if t in market_data}
+    
+    payload = {
         "market": primary_market_data,
         "all_spots": all_spots,
         "puts": results_puts,
@@ -1306,8 +1386,15 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
         "tickers": primary_tickers,
         "targets": target_periods,
         "live_positions": live_positions,
-        "diagnostics": diagnostics
+        "diagnostics": diagnostics,
+        "is_cached": False,
+        "cached_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
+
+    if successful_fetches > 0:
+        save_cached_data(payload)
+
+    return payload
 
 @app.get("/", response_class=HTMLResponse)
 def render_index():
