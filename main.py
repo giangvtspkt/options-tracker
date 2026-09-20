@@ -187,8 +187,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- P/L Metrics Cards -->
-    <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-3">
+    <!-- P/L Metrics Cards (6-Column Grid) -->
+    <div class="grid grid-cols-2 sm:grid-cols-6 gap-2 mb-3">
       <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
         <div class="text-[10px] font-bold text-slate-500">Total Realized</div>
         <div id="totalRealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
@@ -202,10 +202,14 @@ HTML_CONTENT = """<!DOCTYPE html>
         <div id="thisMonthRealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
       </div>
       <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
-        <div class="text-[10px] font-bold text-slate-500">Current Unrealized</div>
+        <div class="text-[10px] font-bold text-blue-900">This Mo Unrealized</div>
         <div id="thisMonthCurrentUnrealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
       </div>
-      <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center col-span-2 sm:col-span-1">
+      <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
+        <div class="text-[10px] font-bold text-slate-500">Total Unrealized</div>
+        <div id="totalCurrentUnrealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
+      </div>
+      <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
         <div class="text-[10px] font-bold text-slate-500">Max Unrealized</div>
         <div id="totalMaxUnrealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
       </div>
@@ -573,22 +577,11 @@ HTML_CONTENT = """<!DOCTYPE html>
         lastMonthYear--;
       }
 
-      const currentMonthPositions = [];
-      cloudPositions.forEach(p => {
-        const parts = (p.exp || '').split('-');
-        const pYear = parseInt(parts[0], 10);
-        const pMonth = parseInt(parts[1], 10) - 1;
-        if (pYear > currentYear || (pYear === currentYear && pMonth >= currentMonth)) {
-          currentMonthPositions.push(p);
-        }
-      });
+      // 1. Keep ALL positions for historical realized metrics
+      let totalRealized = 0, thisMonthRealized = 0, lastMonthRealized = 0;
+      let totalMaxUnrealized = 0, totalCurrentUnrealized = 0, thisMonthCurrentUnrealized = 0;
 
-      currentMonthPositions.sort((a, b) => {
-        const dateDiff = new Date(a.exp) - new Date(b.exp);
-        if (dateDiff !== 0) return dateDiff;
-        return a.ticker.localeCompare(b.ticker);
-      });
-
+      // 2. Open contract stats
       const openStats = {};
       let totalOpenCount = 0;
       let totalCspCapital = 0;
@@ -596,8 +589,46 @@ HTML_CONTENT = """<!DOCTYPE html>
       let ibkrCspCapital = 0;
 
       cloudPositions.forEach(p => {
+        const parts = (p.exp || '').split('-');
+        const pYear = parseInt(parts[0], 10);
+        const pMonth = parseInt(parts[1], 10) - 1;
         const isExpired = p.exp < todayStr;
-        if (!isExpired) {
+        const isThisMonth = (pYear === currentYear && pMonth === currentMonth);
+        const isLastMonth = (pYear === lastMonthYear && pMonth === lastMonth);
+
+        const spot = (globalData && globalData.all_spots && globalData.all_spots[p.ticker] !== undefined) 
+          ? globalData.all_spots[p.ticker] 
+          : ((globalData && globalData.market && globalData.market[p.ticker]) ? globalData.market[p.ticker].spot : null);
+
+        const strikeFormatted = parseFloat(p.strike).toFixed(2);
+        const contractKey = `${p.ticker.trim().toUpperCase()}_${p.exp.trim()}_${strikeFormatted}_${p.type.trim().toUpperCase()}`;
+        const liveMark = (globalData && globalData.live_positions && globalData.live_positions[contractKey] !== undefined)
+          ? globalData.live_positions[contractKey]
+          : null;
+
+        if (isExpired) {
+          let closedPl = 0;
+          if (p.action === 'SELL') {
+            if (spot !== null && spot !== undefined) {
+              const isWin = (p.type === 'PUT' && spot >= p.strike) || (p.type === 'CALL' && spot <= p.strike);
+              if (isWin) {
+                closedPl = p.prem * 100 * p.qty;
+              } else {
+                const intrinsic = p.type === 'PUT' ? Math.max(p.strike - spot, 0) : Math.max(spot - p.strike, 0);
+                closedPl = (p.prem - intrinsic) * 100 * p.qty;
+              }
+            } else {
+              closedPl = p.prem * 100 * p.qty;
+            }
+          } else {
+            const intrinsic = p.type === 'CALL' ? Math.max((spot || 0) - p.strike, 0) : Math.max(p.strike - (spot || 0), 0);
+            closedPl = (intrinsic - p.prem) * 100 * p.qty;
+          }
+
+          totalRealized += closedPl;
+          if (isThisMonth) thisMonthRealized += closedPl;
+          if (isLastMonth) lastMonthRealized += closedPl;
+        } else {
           totalOpenCount += p.qty;
           const broker = (p.broker || 'moomoo').toLowerCase();
 
@@ -621,6 +652,20 @@ HTML_CONTENT = """<!DOCTYPE html>
             }
           } else if (p.type === 'CALL') {
             openStats[p.ticker].calls += p.qty;
+          }
+
+          const maxPl = (p.action === 'SELL') ? (p.prem * 100 * p.qty) : (-p.prem * 100 * p.qty);
+          totalMaxUnrealized += maxPl;
+
+          if (liveMark !== null) {
+            const curPl = (p.action === 'SELL') 
+              ? (p.prem - liveMark) * 100 * p.qty 
+              : (liveMark - p.prem) * 100 * p.qty;
+
+            totalCurrentUnrealized += curPl;
+            if (isThisMonth) {
+              thisMonthCurrentUnrealized += curPl;
+            }
           }
         }
       });
@@ -661,25 +706,25 @@ HTML_CONTENT = """<!DOCTYPE html>
         });
       }
 
-      const visiblePositions = hideExpired 
-        ? currentMonthPositions.filter(p => p.exp >= todayStr)
-        : currentMonthPositions;
+      // 3. Render Positions Table
+      const visiblePositions = cloudPositions
+        .filter(p => !hideExpired || p.exp >= todayStr)
+        .sort((a, b) => {
+          const dateDiff = new Date(a.exp) - new Date(b.exp);
+          if (dateDiff !== 0) return dateDiff;
+          return a.ticker.localeCompare(b.ticker);
+        });
 
       if (visiblePositions.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="11" class="p-2 text-center text-slate-400">${hideExpired ? 'No active open positions remaining.' : 'No active positions for this month.'}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="11" class="p-2 text-center text-slate-400">${hideExpired ? 'No active open positions remaining.' : 'No active positions saved.'}</td></tr>`;
       } else {
         tbody.innerHTML = '';
       }
 
-      let totalRealized = 0, thisMonthRealized = 0, lastMonthRealized = 0, totalMaxUnrealized = 0, currentUnrealized = 0;
       const posColorMap = {};
 
-      currentMonthPositions.forEach(p => {
-        const parts = (p.exp || '').split('-');
-        const pYear = parseInt(parts[0], 10);
-        const pMonth = parseInt(parts[1], 10) - 1;
+      visiblePositions.forEach(p => {
         const isExpired = p.exp < todayStr;
-        const isThisMonth = (pYear === currentYear && pMonth === currentMonth);
         const spot = (globalData && globalData.all_spots && globalData.all_spots[p.ticker] !== undefined) 
           ? globalData.all_spots[p.ticker] 
           : ((globalData && globalData.market && globalData.market[p.ticker]) ? globalData.market[p.ticker].spot : null);
@@ -720,14 +765,9 @@ HTML_CONTENT = """<!DOCTYPE html>
             maxPl = (intrinsic - p.prem) * 100 * p.qty;
             statusHtml = '<span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-bold">Closed</span>';
           }
-
           currentPl = maxPl;
-          totalRealized += maxPl;
-          if (isThisMonth) thisMonthRealized += maxPl;
-          else if (pYear === lastMonthYear && pMonth === lastMonth) lastMonthRealized += maxPl;
         } else {
           maxPl = (p.action === 'SELL') ? (p.prem * 100 * p.qty) : (-p.prem * 100 * p.qty);
-          totalMaxUnrealized += maxPl;
 
           if (liveMark !== null) {
             if (p.action === 'SELL') {
@@ -735,7 +775,6 @@ HTML_CONTENT = """<!DOCTYPE html>
             } else {
               currentPl = (liveMark - p.prem) * 100 * p.qty;
             }
-            currentUnrealized += currentPl;
           }
 
           if (p.action === 'SELL' && spot !== null && spot !== undefined) {
@@ -763,92 +802,91 @@ HTML_CONTENT = """<!DOCTYPE html>
           }
         }
 
-        if (!hideExpired || !isExpired) {
-          const maxPlColor = maxPl >= 0 ? 'text-emerald-700' : 'text-rose-700';
-          const maxPlPrefix = maxPl >= 0 ? '+$' : '-$';
-          const maxPlDisplay = `${maxPlPrefix}${Math.abs(maxPl).toFixed(2)}`;
+        const maxPlColor = maxPl >= 0 ? 'text-emerald-700' : 'text-rose-700';
+        const maxPlPrefix = maxPl >= 0 ? '+$' : '-$';
+        const maxPlDisplay = `${maxPlPrefix}${Math.abs(maxPl).toFixed(2)}`;
 
-          const curPlColor = currentPl >= 0 ? 'text-emerald-700' : 'text-rose-700';
-          const curPlPrefix = currentPl >= 0 ? '+$' : '-$';
+        const curPlColor = currentPl >= 0 ? 'text-emerald-700' : 'text-rose-700';
+        const curPlPrefix = currentPl >= 0 ? '+$' : '-$';
 
-          let curPlDisplay = '<span class="text-slate-400 font-normal">Pending Quote</span>';
-          if (isExpired || liveMark !== null) {
-            let pctSpan = '';
-            if (maxPl !== 0) {
-              const pctOfMax = (currentPl / Math.abs(maxPl)) * 100;
-              const pctColor = pctOfMax >= 0 ? 'text-emerald-600' : 'text-rose-600';
-              pctSpan = `<span class="block text-[9px] font-medium ${pctColor}">(${pctOfMax >= 0 ? '+' : ''}${pctOfMax.toFixed(1)}% max)</span>`;
-            }
-            curPlDisplay = `<div>${curPlPrefix}${Math.abs(currentPl).toFixed(2)}${pctSpan}</div>`;
+        let curPlDisplay = '<span class="text-slate-400 font-normal">Pending Quote</span>';
+        if (isExpired || liveMark !== null) {
+          let pctSpan = '';
+          if (maxPl !== 0) {
+            const pctOfMax = (currentPl / Math.abs(maxPl)) * 100;
+            const pctColor = pctOfMax >= 0 ? 'text-emerald-600' : 'text-rose-600';
+            pctSpan = `<span class="block text-[9px] font-medium ${pctColor}">(${pctOfMax >= 0 ? '+' : ''}${pctOfMax.toFixed(1)}% max)</span>`;
           }
-
-          let markDisplay = '<span class="text-slate-400 font-normal">-</span>';
-          if (isExpired) {
-            markDisplay = '<span class="text-slate-400 font-mono">$0.00</span>';
-          } else if (liveMark !== null) {
-            let spotSubtext = '';
-            if (spot !== null && spot !== undefined && p.strike > 0) {
-              const diffPct = ((spot - p.strike) / p.strike) * 100;
-              const isPut = (p.type === 'PUT');
-              const isSafe = isPut ? (spot >= p.strike) : (spot <= p.strike);
-              const spotColor = isSafe ? 'text-emerald-600' : 'text-rose-600 font-bold';
-              const sign = diffPct > 0 ? '+' : '';
-              spotSubtext = `<span class="block text-[8.5px] font-mono leading-tight ${spotColor}">$${spot.toFixed(2)} (${sign}${diffPct.toFixed(1)}%)</span>`;
-            }
-            markDisplay = `<div><span class="font-mono font-medium text-slate-800">$${liveMark.toFixed(2)}</span>${spotSubtext}</div>`;
-          } else {
-            markDisplay = '<span class="text-amber-500 font-normal">No Quote</span>';
-          }
-
-          const actionBadge = p.action === 'SELL'
-            ? '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">SELL</span>'
-            : '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">BUY</span>';
-
-          const rowBg = getExpColor(p.exp, posColorMap);
-          const curTradeDate = p.trade_date || '';
-          const curExpDate = p.exp || '';
-          const curBroker = (p.broker || 'moomoo').toLowerCase();
-
-          const tr = document.createElement('tr');
-          tr.className = `border-b ${rowBg}`;
-          tr.innerHTML = `
-            <td class="p-1 border-r whitespace-nowrap">
-              <select onchange="updatePositionField(${p.id}, 'broker', this.value)"
-                class="border rounded px-1 py-0.5 bg-white font-bold text-[9px] ${curBroker === 'moomoo' ? 'text-orange-600 border-orange-200' : 'text-blue-700 border-blue-200'}">
-                <option value="moomoo" ${curBroker === 'moomoo' ? 'selected' : ''}>MOOMOO</option>
-                <option value="ibkr" ${curBroker === 'ibkr' ? 'selected' : ''}>IBKR</option>
-              </select>
-            </td>
-            <td class="p-1.5 border-r whitespace-nowrap">${actionBadge}</td>
-            <td class="p-1.5 border-r whitespace-nowrap font-bold">${p.ticker} $${p.strike} ${p.type} (x${p.qty})</td>
-            <td class="p-1 border-r whitespace-nowrap">
-              <input type="date" value="${curTradeDate}"
-                onchange="updatePositionField(${p.id}, 'trade_date', this.value)"
-                class="border rounded px-1 py-0.5 bg-white font-mono text-[9px] text-slate-700">
-            </td>
-            <td class="p-1 border-r whitespace-nowrap">
-              <input type="date" value="${curExpDate}"
-                onchange="updatePositionField(${p.id}, 'exp', this.value)"
-                class="border rounded px-1 py-0.5 bg-white font-mono text-[9px] font-bold text-slate-700">
-            </td>
-            <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
-            <td class="p-1.5 border-r whitespace-nowrap">${markDisplay}</td>
-            <td class="p-1.5 border-r whitespace-nowrap font-mono font-extrabold bg-blue-50/40 ${curPlColor}">${curPlDisplay}</td>
-            <td class="p-1.5 border-r whitespace-nowrap font-mono font-bold ${maxPlColor}">${maxPlDisplay}</td>
-            <td class="p-1.5 border-r whitespace-nowrap">${statusHtml}</td>
-            <td class="p-1.5 text-center">
-              <button onclick="deletePosition(${p.id})" class="text-rose-600 hover:text-rose-800 font-bold">✕</button>
-            </td>
-          `;
-          tbody.appendChild(tr);
+          curPlDisplay = `<div>${curPlPrefix}${Math.abs(currentPl).toFixed(2)}${pctSpan}</div>`;
         }
+
+        let markDisplay = '<span class="text-slate-400 font-normal">-</span>';
+        if (isExpired) {
+          markDisplay = '<span class="text-slate-400 font-mono">$0.00</span>';
+        } else if (liveMark !== null) {
+          let spotSubtext = '';
+          if (spot !== null && spot !== undefined && p.strike > 0) {
+            const diffPct = ((spot - p.strike) / p.strike) * 100;
+            const isPut = (p.type === 'PUT');
+            const isSafe = isPut ? (spot >= p.strike) : (spot <= p.strike);
+            const spotColor = isSafe ? 'text-emerald-600' : 'text-rose-600 font-bold';
+            const sign = diffPct > 0 ? '+' : '';
+            spotSubtext = `<span class="block text-[8.5px] font-mono leading-tight ${spotColor}">$${spot.toFixed(2)} (${sign}${diffPct.toFixed(1)}%)</span>`;
+          }
+          markDisplay = `<div><span class="font-mono font-medium text-slate-800">$${liveMark.toFixed(2)}</span>${spotSubtext}</div>`;
+        } else {
+          markDisplay = '<span class="text-amber-500 font-normal">No Quote</span>';
+        }
+
+        const actionBadge = p.action === 'SELL'
+          ? '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">SELL</span>'
+          : '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">BUY</span>';
+
+        const rowBg = getExpColor(p.exp, posColorMap);
+        const curTradeDate = p.trade_date || '';
+        const curExpDate = p.exp || '';
+        const curBroker = (p.broker || 'moomoo').toLowerCase();
+
+        const tr = document.createElement('tr');
+        tr.className = `border-b ${rowBg}`;
+        tr.innerHTML = `
+          <td class="p-1 border-r whitespace-nowrap">
+            <select onchange="updatePositionField(${p.id}, 'broker', this.value)"
+              class="border rounded px-1 py-0.5 bg-white font-bold text-[9px] ${curBroker === 'moomoo' ? 'text-orange-600 border-orange-200' : 'text-blue-700 border-blue-200'}">
+              <option value="moomoo" ${curBroker === 'moomoo' ? 'selected' : ''}>MOOMOO</option>
+              <option value="ibkr" ${curBroker === 'ibkr' ? 'selected' : ''}>IBKR</option>
+            </select>
+          </td>
+          <td class="p-1.5 border-r whitespace-nowrap">${actionBadge}</td>
+          <td class="p-1.5 border-r whitespace-nowrap font-bold">${p.ticker} $${p.strike} ${p.type} (x${p.qty})</td>
+          <td class="p-1 border-r whitespace-nowrap">
+            <input type="date" value="${curTradeDate}"
+              onchange="updatePositionField(${p.id}, 'trade_date', this.value)"
+              class="border rounded px-1 py-0.5 bg-white font-mono text-[9px] text-slate-700">
+          </td>
+          <td class="p-1 border-r whitespace-nowrap">
+            <input type="date" value="${curExpDate}"
+              onchange="updatePositionField(${p.id}, 'exp', this.value)"
+              class="border rounded px-1 py-0.5 bg-white font-mono text-[9px] font-bold text-slate-700">
+          </td>
+          <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
+          <td class="p-1.5 border-r whitespace-nowrap">${markDisplay}</td>
+          <td class="p-1.5 border-r whitespace-nowrap font-mono font-extrabold bg-blue-50/40 ${curPlColor}">${curPlDisplay}</td>
+          <td class="p-1.5 border-r whitespace-nowrap font-mono font-bold ${maxPlColor}">${maxPlDisplay}</td>
+          <td class="p-1.5 border-r whitespace-nowrap">${statusHtml}</td>
+          <td class="p-1.5 text-center">
+            <button onclick="deletePosition(${p.id})" class="text-rose-600 hover:text-rose-800 font-bold">✕</button>
+          </td>
+        `;
+        tbody.appendChild(tr);
       });
 
       const fmt = (val) => `${val >= 0 ? '+$' : '-$'}${Math.abs(val).toFixed(2)}`;
       document.getElementById('totalRealized').innerText = fmt(totalRealized);
       document.getElementById('lastMonthRealized').innerText = fmt(lastMonthRealized);
       document.getElementById('thisMonthRealized').innerText = fmt(thisMonthRealized);
-      document.getElementById('thisMonthCurrentUnrealized').innerText = fmt(currentUnrealized);
+      document.getElementById('thisMonthCurrentUnrealized').innerText = fmt(thisMonthCurrentUnrealized);
+      document.getElementById('totalCurrentUnrealized').innerText = fmt(totalCurrentUnrealized);
       document.getElementById('totalMaxUnrealized').innerText = fmt(totalMaxUnrealized);
     }
 
@@ -912,7 +950,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       const btnText = document.getElementById('btnText');
       const status = document.getElementById('status');
 
-      // Only show the skeleton loader if it's the very first load or a manual click
       const showSkeleton = !hasLoadedOnce || !isSilent;
       if (showSkeleton) {
         btn.disabled = true;
@@ -1119,9 +1156,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     (async () => {
       loadAlertCriteria();
       await loadCloudPositions();
-      // First load shows full loader
       await fetchData(false);
-      // Background interval runs completely silent without overriding tables with skeletons
       setInterval(() => fetchData(true), 60000);
     })();
   </script>
