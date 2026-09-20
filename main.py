@@ -93,6 +93,7 @@ class PositionModel(BaseModel):
     qty: int
     exp: str
     trade_date: str = ""
+    broker: str = "moomoo"
 
 HTML_CONTENT = """<!DOCTYPE html>
 <html lang="en">
@@ -123,10 +124,45 @@ HTML_CONTENT = """<!DOCTYPE html>
           <input id="hideExpiredToggle" type="checkbox" onchange="toggleHideExpired(this.checked)" class="rounded text-blue-600">
           <span>Hide Expired</span>
         </label>
+        <button onclick="toggleAlertSettings()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold px-2 py-0.5 rounded border border-slate-200 flex items-center gap-1">
+          <span>⚙</span> Alert Criteria
+        </button>
       </div>
       <button onclick="toggleAddForm()" id="toggleFormBtn" class="bg-slate-800 text-white text-[10px] font-bold px-2.5 py-1 rounded-md">
         + Add Position
       </button>
+    </div>
+
+    <!-- Collapsible Alert Criteria Configuration Panel -->
+    <div id="alertSettingsPanel" class="hidden bg-slate-50 border border-slate-200 rounded-lg p-2.5 mb-3">
+      <div class="flex items-center justify-between mb-2">
+        <span class="font-bold text-[11px] text-slate-700">⚙ Custom Rolling Alert Thresholds</span>
+        <button onclick="resetAlertCriteria()" class="text-[10px] bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold px-2 py-0.5 rounded border border-rose-200">
+          ↺ Reset to Defaults
+        </button>
+      </div>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px]">
+        <div>
+          <label class="font-semibold text-slate-600 block mb-0.5">CSP Warn Buffer (%)</label>
+          <input id="critPutWarnPct" type="number" step="0.5" class="w-full border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
+          <span class="text-[9px] text-slate-400">Spot &le; Strike + X%</span>
+        </div>
+        <div>
+          <label class="font-semibold text-slate-600 block mb-0.5">CSP Warn DTE (&le; days)</label>
+          <input id="critPutWarnDte" type="number" step="1" class="w-full border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
+          <span class="text-[9px] text-slate-400">If P&L is negative</span>
+        </div>
+        <div>
+          <label class="font-semibold text-slate-600 block mb-0.5">CSP Critical DTE (&le; days)</label>
+          <input id="critPutCritDte" type="number" step="1" class="w-full border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
+          <span class="text-[9px] text-slate-400">Near strike deadline</span>
+        </div>
+        <div>
+          <label class="font-semibold text-slate-600 block mb-0.5">CC Tested Buffer (%)</label>
+          <input id="critCallWarnPct" type="number" step="0.5" class="w-full border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
+          <span class="text-[9px] text-slate-400">Spot &ge; Strike - X%</span>
+        </div>
+      </div>
     </div>
 
     <!-- P/L Metrics Cards -->
@@ -169,7 +205,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     <!-- Add Position Form -->
     <div id="positionForm" class="hidden bg-slate-50 p-2.5 rounded-lg border border-slate-200 mb-3 space-y-2">
-      <div class="grid grid-cols-3 gap-2">
+      <div class="grid grid-cols-4 gap-2">
         <div>
           <label class="text-[10px] font-bold text-slate-500">Action</label>
           <select id="posAction" class="w-full border rounded p-1.5 text-xs bg-white">
@@ -187,6 +223,13 @@ HTML_CONTENT = """<!DOCTYPE html>
         <div>
           <label class="text-[10px] font-bold text-slate-500">Ticker</label>
           <input id="posTicker" type="text" placeholder="IREN" class="w-full border rounded p-1.5 text-xs uppercase font-semibold">
+        </div>
+        <div>
+          <label class="text-[10px] font-bold text-slate-500">Broker</label>
+          <select id="posBroker" class="w-full border rounded p-1.5 text-xs bg-white font-semibold">
+            <option value="moomoo">MOOMOO</option>
+            <option value="ibkr">IBKR</option>
+          </select>
         </div>
       </div>
 
@@ -227,6 +270,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       <table class="w-full text-left text-[10px]">
         <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold">
           <tr>
+            <th class="p-1.5 border-r">Broker ✎</th>
             <th class="p-1.5 border-r">Pos</th>
             <th class="p-1.5 border-r">Contract</th>
             <th class="p-1.5 border-r">Trade Day ✎</th>
@@ -240,7 +284,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           </tr>
         </thead>
         <tbody id="positionsBody">
-          <tr><td colspan="10" class="p-2 text-center text-slate-400">Loading positions...</td></tr>
+          <tr><td colspan="11" class="p-2 text-center text-slate-400">Loading positions...</td></tr>
         </tbody>
       </table>
     </div>
@@ -334,6 +378,50 @@ HTML_CONTENT = """<!DOCTYPE html>
     let elapsedSeconds = 0;
     let hideExpired = localStorage.getItem('hideExpiredContracts') === 'true';
 
+    const DEFAULT_ALERT_CRITERIA = {
+      putWarnPct: 3.0,
+      putWarnDte: 10,
+      putCritDte: 5,
+      callWarnPct: 2.0
+    };
+
+    let alertCriteria = { ...DEFAULT_ALERT_CRITERIA };
+
+    function loadAlertCriteria() {
+      const saved = localStorage.getItem('alertCriteria');
+      if (saved) {
+        try {
+          alertCriteria = { ...DEFAULT_ALERT_CRITERIA, ...JSON.parse(saved) };
+        } catch(e) {
+          alertCriteria = { ...DEFAULT_ALERT_CRITERIA };
+        }
+      }
+      document.getElementById('critPutWarnPct').value = alertCriteria.putWarnPct;
+      document.getElementById('critPutWarnDte').value = alertCriteria.putWarnDte;
+      document.getElementById('critPutCritDte').value = alertCriteria.putCritDte;
+      document.getElementById('critCallWarnPct').value = alertCriteria.callWarnPct;
+    }
+
+    function saveAlertCriteria() {
+      alertCriteria.putWarnPct = parseFloat(document.getElementById('critPutWarnPct').value) || DEFAULT_ALERT_CRITERIA.putWarnPct;
+      alertCriteria.putWarnDte = parseInt(document.getElementById('critPutWarnDte').value) || DEFAULT_ALERT_CRITERIA.putWarnDte;
+      alertCriteria.putCritDte = parseInt(document.getElementById('critPutCritDte').value) || DEFAULT_ALERT_CRITERIA.putCritDte;
+      alertCriteria.callWarnPct = parseFloat(document.getElementById('critCallWarnPct').value) || DEFAULT_ALERT_CRITERIA.callWarnPct;
+      localStorage.setItem('alertCriteria', JSON.stringify(alertCriteria));
+      renderPositionsAndPL();
+    }
+
+    function resetAlertCriteria() {
+      alertCriteria = { ...DEFAULT_ALERT_CRITERIA };
+      localStorage.removeItem('alertCriteria');
+      loadAlertCriteria();
+      renderPositionsAndPL();
+    }
+
+    function toggleAlertSettings() {
+      document.getElementById('alertSettingsPanel').classList.toggle('hidden');
+    }
+
     const EXP_COLOR_PALETTE = [
       'bg-indigo-50/80',
       'bg-amber-50/80',
@@ -373,7 +461,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         cloudPositions = await res.json();
         renderPositionsAndPL();
       } catch (e) {
-        document.getElementById('positionsBody').innerHTML = '<tr><td colspan="10" class="p-2 text-center text-slate-400">No active positions saved.</td></tr>';
+        document.getElementById('positionsBody').innerHTML = '<tr><td colspan="11" class="p-2 text-center text-slate-400">No active positions saved.</td></tr>';
       }
     }
 
@@ -381,6 +469,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       const action = document.getElementById('posAction').value;
       const type = document.getElementById('posType').value;
       const ticker = document.getElementById('posTicker').value.trim().toUpperCase();
+      const broker = document.getElementById('posBroker').value;
       const strike = parseFloat(document.getElementById('posStrike').value);
       const prem = parseFloat(document.getElementById('posPrem').value);
       const qty = parseInt(document.getElementById('posQty').value) || 1;
@@ -395,7 +484,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       const res = await fetch('/api/positions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: Date.now(), action, type, ticker, strike, prem, qty, exp, trade_date })
+        body: JSON.stringify({ id: Date.now(), action, type, ticker, strike, prem, qty, exp, trade_date, broker })
       });
 
       if (res.ok) {
@@ -418,6 +507,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       } else {
         targetPos[field] = value;
       }
+      if (!targetPos.broker) targetPos.broker = 'moomoo';
 
       const res = await fetch(`/api/positions/${id}`, {
         method: 'PUT',
@@ -525,7 +615,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         : currentMonthPositions;
 
       if (visiblePositions.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="10" class="p-2 text-center text-slate-400">${hideExpired ? 'No active open positions remaining.' : 'No active positions for this month.'}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="11" class="p-2 text-center text-slate-400">${hideExpired ? 'No active open positions remaining.' : 'No active positions for this month.'}</td></tr>`;
       } else {
         tbody.innerHTML = '';
       }
@@ -601,9 +691,9 @@ HTML_CONTENT = """<!DOCTYPE html>
             const pctFromStrike = ((spot - p.strike) / p.strike) * 100;
 
             if (p.type === 'PUT') {
-              if (spot <= p.strike || (dte <= 5 && pctFromStrike <= 1.5)) {
+              if (spot <= p.strike || (dte <= alertCriteria.putCritDte && pctFromStrike <= 1.5)) {
                 statusHtml = '<span class="px-1.5 py-0.5 rounded bg-rose-600 text-white font-extrabold animate-pulse shadow-sm whitespace-nowrap">ROLL / ASSIGN NOW</span>';
-              } else if (pctFromStrike <= 3.0 || (dte <= 10 && currentPl < 0)) {
+              } else if (pctFromStrike <= alertCriteria.putWarnPct || (dte <= alertCriteria.putWarnDte && currentPl < 0)) {
                 statusHtml = '<span class="px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-extrabold whitespace-nowrap shadow-sm">ROLL SOON</span>';
               } else {
                 statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold whitespace-nowrap">Active</span>';
@@ -611,7 +701,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             } else if (p.type === 'CALL') {
               if (spot >= p.strike) {
                 statusHtml = '<span class="px-1.5 py-0.5 rounded bg-purple-700 text-white font-bold whitespace-nowrap shadow-sm">MAX PROFIT / ASSIGN</span>';
-              } else if (pctFromStrike >= -2.0) {
+              } else if (pctFromStrike >= -alertCriteria.callWarnPct) {
                 statusHtml = '<span class="px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-bold whitespace-nowrap shadow-sm">TESTED</span>';
               } else {
                 statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold whitespace-nowrap">Active</span>';
@@ -651,10 +741,18 @@ HTML_CONTENT = """<!DOCTYPE html>
 
           const rowBg = getExpColor(p.exp, posColorMap);
           const curTradeDate = p.trade_date || '';
+          const curBroker = (p.broker || 'moomoo').toLowerCase();
 
           const tr = document.createElement('tr');
           tr.className = `border-b ${rowBg}`;
           tr.innerHTML = `
+            <td class="p-1 border-r whitespace-nowrap">
+              <select onchange="updatePositionField(${p.id}, 'broker', this.value)"
+                class="border rounded px-1 py-0.5 bg-white font-bold text-[9px] ${curBroker === 'moomoo' ? 'text-orange-600 border-orange-200' : 'text-blue-700 border-blue-200'}">
+                <option value="moomoo" ${curBroker === 'moomoo' ? 'selected' : ''}>MOOMOO</option>
+                <option value="ibkr" ${curBroker === 'ibkr' ? 'selected' : ''}>IBKR</option>
+              </select>
+            </td>
             <td class="p-1.5 border-r whitespace-nowrap">${actionBadge}</td>
             <td class="p-1.5 border-r whitespace-nowrap font-bold">${p.ticker} $${p.strike} ${p.type} (x${p.qty})</td>
             <td class="p-1 border-r whitespace-nowrap">
@@ -904,9 +1002,13 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
     }
 
-    loadCloudPositions();
-    fetchData();
-    setInterval(fetchData, 60000);
+    // Await initial positions so contract tickers are never missed on first fetch
+    (async () => {
+      loadAlertCriteria();
+      await loadCloudPositions();
+      fetchData();
+      setInterval(fetchData, 60000);
+    })();
   </script>
 </body>
 </html>
@@ -1066,6 +1168,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
             except Exception:
                 continue
 
+        # Look up Live Mark for all user contracts
         for p in positions:
             if p.get("ticker", "").upper() == ticker and p.get("exp") in loaded_chains:
                 chain = loaded_chains[p["exp"]]
@@ -1080,7 +1183,8 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                     last_p = float(row_data.get("lastPrice", 0) or 0)
                     mark = ask if ask > 0 else (last_p if last_p > 0 else (bid if bid > 0 else 0.0))
                     
-                    contract_key = f"{ticker}_{p['exp']}_{k_target:.2f}_{p['type'].upper()}"
+                    # Consistent user-strike formatted key
+                    contract_key = f"{ticker}_{p['exp']}_{float(p.get('strike', 0)):.2f}_{p['type'].upper()}"
                     live_positions[contract_key] = round(mark, 2)
 
         if is_primary:
@@ -1158,16 +1262,16 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                         ann_pct = yield_pct * 252 / actual_b_days
                         pct_diff = ((k_val - spot_price) / spot_price) * 100
 
-                        results_calls[str(target)][ticker] = {
-                            "raw_exp": exp,
-                            "exp": exp_stacked,
-                            "strike": round(k_val, 2),
-                            "pct_diff": f"{pct_diff:+.1f}%",
-                            "iv": round((iv_val or 0.45) * 100, 1),
-                            "prem": round(prem, 2),
-                            "ann": round(ann_pct, 1),
-                            "is_safe": k_val > market_data[ticker]["resistance"]
-                        }
+                    results_calls[str(target)][ticker] = {
+                        "raw_exp": exp,
+                        "exp": exp_stacked,
+                        "strike": round(k_val, 2),
+                        "pct_diff": f"{pct_diff:+.1f}%",
+                        "iv": round((iv_val or 0.45) * 100, 1),
+                        "prem": round(prem, 2),
+                        "ann": round(ann_pct, 1),
+                        "is_safe": k_val > market_data[ticker]["resistance"]
+                    }
 
     primary_market_data = {t: market_data[t] for t in primary_tickers if t in market_data}
 
