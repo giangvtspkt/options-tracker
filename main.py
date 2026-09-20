@@ -774,7 +774,6 @@ HTML_CONTENT = """<!DOCTYPE html>
             curPlDisplay = `<div>${curPlPrefix}${Math.abs(currentPl).toFixed(2)}${pctSpan}</div>`;
           }
 
-          // Format Live Mark with Current Stock Spot Price and % vs Strike
           let markDisplay = '<span class="text-slate-400 font-normal">-</span>';
           if (isExpired) {
             markDisplay = '<span class="text-slate-400 font-mono">$0.00</span>';
@@ -783,7 +782,6 @@ HTML_CONTENT = """<!DOCTYPE html>
             if (spot !== null && spot !== undefined && p.strike > 0) {
               const diffPct = ((spot - p.strike) / p.strike) * 100;
               const isPut = (p.type === 'PUT');
-              // For Puts: spot > strike is safe/green (OTM). For Calls: spot < strike is safe/green (OTM)
               const isSafe = isPut ? (spot >= p.strike) : (spot <= p.strike);
               const spotColor = isSafe ? 'text-emerald-600' : 'text-rose-600 font-bold';
               const sign = diffPct > 0 ? '+' : '';
