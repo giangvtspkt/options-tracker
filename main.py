@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import yfinance as yf
+import numpy as np
 import math
 import datetime
 import os
@@ -46,6 +47,12 @@ def count_business_days(start_date, end_date):
             days += 1
         curr += datetime.timedelta(days=1)
     return max(days, 1)
+
+def calc_iv_percentile(current_iv, hist_vols):
+    if not hist_vols or len(hist_vols) == 0 or current_iv <= 0:
+        return None
+    count_below = sum(1 for v in hist_vols if v < current_iv)
+    return round((count_below / len(hist_vols)) * 100.0, 1)
 
 def get_positions_from_github():
     if not GITHUB_TOKEN or not GITHUB_REPO:
@@ -158,12 +165,12 @@ HTML_CONTENT = """<!DOCTYPE html>
     <!-- Collapsible Alert Criteria Configuration Panel -->
     <div id="alertSettingsPanel" class="hidden bg-slate-50 border border-slate-200 rounded-lg p-2.5 mb-3">
       <div class="flex items-center justify-between mb-2">
-        <span class="font-bold text-[11px] text-slate-700">⚙ Custom Rolling Alert Thresholds</span>
+        <span class="font-bold text-[11px] text-slate-700">⚙ Custom Rolling &amp; IV Percentile Alert Thresholds</span>
         <button onclick="resetAlertCriteria()" class="text-[10px] bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold px-2 py-0.5 rounded border border-rose-200">
           ↺ Reset to Defaults
         </button>
       </div>
-      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px]">
+      <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-[10px]">
         <div>
           <label class="font-semibold text-slate-600 block mb-0.5">CSP Warn Buffer (%)</label>
           <input id="critPutWarnPct" type="number" step="0.5" class="w-full border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
@@ -183,6 +190,16 @@ HTML_CONTENT = """<!DOCTYPE html>
           <label class="font-semibold text-slate-600 block mb-0.5">CC Tested Buffer (%)</label>
           <input id="critCallWarnPct" type="number" step="0.5" class="w-full border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
           <span class="text-[9px] text-slate-400">Spot &ge; Strike - X%</span>
+        </div>
+        <div class="bg-amber-50/70 p-1.5 rounded border border-amber-200">
+          <label class="font-bold text-amber-900 block mb-0.5">🔥 Put High IV (%ile)</label>
+          <input id="critPutHighIvPctile" type="number" step="5" class="w-full border rounded p-1 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
+          <span class="text-[9px] text-amber-700">Triggers if Put IVP &ge; threshold (Default: 85%)</span>
+        </div>
+        <div class="bg-amber-50/70 p-1.5 rounded border border-amber-200">
+          <label class="font-bold text-amber-900 block mb-0.5">🔥 Call High IV (%ile)</label>
+          <input id="critCallHighIvPctile" type="number" step="5" class="w-full border rounded p-1 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
+          <span class="text-[9px] text-amber-700">Triggers if Call IVP &ge; threshold (Default: 80%)</span>
         </div>
       </div>
     </div>
@@ -295,7 +312,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Contract Positions Table with Same Format for Trade Day & Exp -->
+    <!-- Contract Positions Table -->
     <div class="overflow-x-auto border border-slate-200 rounded-lg">
       <table class="w-full text-left text-[10px]">
         <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold">
@@ -374,8 +391,9 @@ HTML_CONTENT = """<!DOCTYPE html>
 
   <!-- 5. Cash-Secured Puts -->
   <div class="mb-4">
-    <h2 class="text-xs font-bold text-sky-900 bg-sky-100 p-2.5 rounded-t-lg border-t border-x border-sky-200">
-      📉 Cash-Secured Puts (Green = Strike &lt; Support/Floor)
+    <h2 class="text-xs font-bold text-sky-900 bg-sky-100 p-2.5 rounded-t-lg border-t border-x border-sky-200 flex items-center justify-between">
+      <span>📉 Cash-Secured Puts (Green = Strike &lt; Support/Floor)</span>
+      <span id="putHighIvNotice" class="text-[10px] text-rose-800 font-bold hidden bg-rose-200/80 px-2 py-0.5 rounded animate-pulse">🔥 High IVP Put Alert Active</span>
     </h2>
     <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
       <table class="w-full text-left" id="putsTable">
@@ -388,8 +406,9 @@ HTML_CONTENT = """<!DOCTYPE html>
 
   <!-- 6. Covered Calls -->
   <div class="mb-6">
-    <h2 class="text-xs font-bold text-amber-900 bg-amber-100 p-2.5 rounded-t-lg border-t border-x border-amber-200">
-      📈 Covered Calls (Green = Strike &gt; Resistance/Ceiling)
+    <h2 class="text-xs font-bold text-amber-900 bg-amber-100 p-2.5 rounded-t-lg border-t border-x border-amber-200 flex items-center justify-between">
+      <span>📈 Covered Calls (Green = Strike &gt; Resistance/Ceiling)</span>
+      <span id="callHighIvNotice" class="text-[10px] text-rose-800 font-bold hidden bg-rose-200/80 px-2 py-0.5 rounded animate-pulse">🔥 High IVP Call Alert Active</span>
     </h2>
     <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
       <table class="w-full text-left" id="callsTable">
@@ -413,7 +432,9 @@ HTML_CONTENT = """<!DOCTYPE html>
       putWarnPct: 3.0,
       putWarnDte: 10,
       putCritDte: 5,
-      callWarnPct: 2.0
+      callWarnPct: 2.0,
+      putHighIvPctile: 85.0,
+      callHighIvPctile: 80.0
     };
 
     let alertCriteria = { ...DEFAULT_ALERT_CRITERIA };
@@ -431,6 +452,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       document.getElementById('critPutWarnDte').value = alertCriteria.putWarnDte;
       document.getElementById('critPutCritDte').value = alertCriteria.putCritDte;
       document.getElementById('critCallWarnPct').value = alertCriteria.callWarnPct;
+      document.getElementById('critPutHighIvPctile').value = alertCriteria.putHighIvPctile;
+      document.getElementById('critCallHighIvPctile').value = alertCriteria.callHighIvPctile;
     }
 
     function saveAlertCriteria() {
@@ -438,8 +461,11 @@ HTML_CONTENT = """<!DOCTYPE html>
       alertCriteria.putWarnDte = parseInt(document.getElementById('critPutWarnDte').value) || DEFAULT_ALERT_CRITERIA.putWarnDte;
       alertCriteria.putCritDte = parseInt(document.getElementById('critPutCritDte').value) || DEFAULT_ALERT_CRITERIA.putCritDte;
       alertCriteria.callWarnPct = parseFloat(document.getElementById('critCallWarnPct').value) || DEFAULT_ALERT_CRITERIA.callWarnPct;
+      alertCriteria.putHighIvPctile = parseFloat(document.getElementById('critPutHighIvPctile').value) || DEFAULT_ALERT_CRITERIA.putHighIvPctile;
+      alertCriteria.callHighIvPctile = parseFloat(document.getElementById('critCallHighIvPctile').value) || DEFAULT_ALERT_CRITERIA.callHighIvPctile;
       localStorage.setItem('alertCriteria', JSON.stringify(alertCriteria));
       renderPositionsAndPL();
+      renderBothTables();
     }
 
     function resetAlertCriteria() {
@@ -447,6 +473,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       localStorage.removeItem('alertCriteria');
       loadAlertCriteria();
       renderPositionsAndPL();
+      renderBothTables();
     }
 
     function toggleAlertSettings() {
@@ -577,11 +604,9 @@ HTML_CONTENT = """<!DOCTYPE html>
         lastMonthYear--;
       }
 
-      // 1. Keep ALL positions for historical realized metrics
       let totalRealized = 0, thisMonthRealized = 0, lastMonthRealized = 0;
       let totalMaxUnrealized = 0, totalCurrentUnrealized = 0, thisMonthCurrentUnrealized = 0;
 
-      // 2. Open contract stats
       const openStats = {};
       let totalOpenCount = 0;
       let totalCspCapital = 0;
@@ -706,7 +731,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         });
       }
 
-      // 3. Render Positions Table
       const visiblePositions = cloudPositions
         .filter(p => !hideExpired || p.exp >= todayStr)
         .sort((a, b) => {
@@ -1062,11 +1086,14 @@ HTML_CONTENT = """<!DOCTYPE html>
     function renderBothTables() {
       if (!globalData) return;
       const displayTickers = selectedTicker === 'ALL' ? globalData.tickers : [selectedTicker];
-      renderTable('putsBody', globalData.puts, displayTickers, globalData.targets, 'Put');
-      renderTable('callsBody', globalData.calls, displayTickers, globalData.targets, 'Call');
+      renderTable('putsBody', globalData.puts, displayTickers, globalData.targets, 'Put', alertCriteria.putHighIvPctile, 'putHighIvNotice');
+      renderTable('callsBody', globalData.calls, displayTickers, globalData.targets, 'Call', alertCriteria.callHighIvPctile, 'callHighIvNotice');
     }
 
-    function renderTable(elementId, results, tickers, targets, tableType) {
+    function renderTable(elementId, results, tickers, targets, tableType, highIvPctileThreshold, headerNoticeId) {
+      const headerNotice = document.getElementById(headerNoticeId);
+      if (headerNotice) headerNotice.classList.add('hidden');
+
       const tbody = document.getElementById(elementId);
       tbody.innerHTML = '';
 
@@ -1074,6 +1101,8 @@ HTML_CONTENT = """<!DOCTYPE html>
         tbody.innerHTML = `<tr><td class="p-4 text-center text-slate-400">No active tickers found in the Tickers box.</td></tr>`;
         return;
       }
+
+      let hasHighIvInTable = false;
 
       const tickerColors = [
         { header: 'bg-slate-700 text-white', sub: 'bg-slate-100 text-slate-700' },
@@ -1092,7 +1121,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         headHtml += `
           <th class="p-1.5 border-r text-center whitespace-nowrap ${c.sub}">Exp</th>
           <th class="p-1.5 border-r whitespace-nowrap ${c.sub}">Strike (% Spot)</th>
-          <th class="p-1.5 border-r whitespace-nowrap ${c.sub}">IV %</th>
+          <th class="p-1.5 border-r whitespace-nowrap ${c.sub}">IV (%ile)</th>
           <th class="p-1.5 border-r whitespace-nowrap ${c.sub}">Prem</th>
           <th class="p-1.5 border-r-2 border-r-slate-400 whitespace-nowrap ${c.sub}">Ann %</th>
         `; 
@@ -1124,10 +1153,21 @@ HTML_CONTENT = """<!DOCTYPE html>
           if (item) {
             totalContractsPopulated++;
             const strikeBg = item.is_safe ? 'bg-green-200 text-green-900 font-bold' : '';
+            
+            const ivp = item.iv_pctile;
+            const hasIvp = (ivp !== undefined && ivp !== null);
+            const isHighIv = hasIvp && (ivp >= highIvPctileThreshold);
+            if (isHighIv) hasHighIvInTable = true;
+
+            const pctileText = hasIvp ? `(${Math.round(ivp)}%)` : '';
+            const ivDisplay = isHighIv
+              ? `<span class="bg-rose-100 text-rose-800 font-extrabold px-1 py-0.5 rounded border border-rose-300 animate-pulse whitespace-nowrap" title="High IV Percentile (&ge; ${highIvPctileThreshold}%)">🔥 ${item.iv}% ${pctileText}</span>`
+              : `<span class="text-slate-600">${item.iv}% <span class="text-[9px] text-slate-400">${pctileText}</span></span>`;
+
             rowHtml += `
               <td class="p-1 border-r text-center leading-tight text-[10px] text-slate-700">${item.exp}</td>
               <td class="p-1.5 border-r whitespace-nowrap ${strikeBg}">$${item.strike} <span class="text-[9px]">(${item.pct_diff})</span></td>
-              <td class="p-1.5 border-r whitespace-nowrap text-slate-500 font-mono">${item.iv}%</td>
+              <td class="p-1.5 border-r whitespace-nowrap font-mono text-center">${ivDisplay}</td>
               <td class="p-1.5 border-r whitespace-nowrap font-bold">$${item.prem}</td>
               <td class="p-1.5 border-r-2 border-r-slate-400 whitespace-nowrap text-emerald-700 font-bold">${item.ann}%</td>
             `;
@@ -1141,6 +1181,15 @@ HTML_CONTENT = """<!DOCTYPE html>
         rowHtml += `</tr>`;
         tbody.innerHTML += rowHtml;
       });
+
+      if (headerNotice) {
+        if (hasHighIvInTable) {
+          headerNotice.innerText = `🔥 High IVP ${tableType} Alert (&ge; ${highIvPctileThreshold}%ile)`;
+          headerNotice.classList.remove('hidden');
+        } else {
+          headerNotice.classList.add('hidden');
+        }
+      }
 
       if (totalContractsPopulated === 0) {
         tbody.innerHTML += `
@@ -1237,6 +1286,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
         spot_price = 0.0
         expirations = []
         df_hist = None
+        hist_vols = []
 
         try:
             tkr = yf.Ticker(ticker)
@@ -1252,7 +1302,19 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                     spot_price = float(hist_1d['Close'].iloc[-1])
 
             expirations = list(tkr.options) if tkr.options else []
-            df_hist = tkr.history(period="30d")
+            
+            df_hist_1y = tkr.history(period="1y")
+            if df_hist_1y is not None and len(df_hist_1y) >= 30:
+                df_hist = df_hist_1y.tail(30)
+                df_clean = df_hist_1y['Close'].dropna()
+                df_clean = df_clean[df_clean > 0]
+                returns = np.log(df_clean / df_clean.shift(1)).dropna()
+                if len(returns) >= 20:
+                    rolling_vol = returns.rolling(window=20).std() * math.sqrt(252)
+                    hist_vols = [float(v) for v in rolling_vol.dropna().tolist() if not math.isnan(v) and v > 0]
+            else:
+                df_hist = tkr.history(period="30d")
+
             if spot_price > 0:
                 successful_fetches += 1
         except Exception as e:
@@ -1386,6 +1448,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                         yield_pct = (prem / k_val * 100) if k_val > 0 else 0
                         ann_pct = yield_pct * 252 / actual_b_days
                         pct_diff = ((k_val - spot_price) / spot_price) * 100
+                        iv_pctile = calc_iv_percentile(iv_val, hist_vols)
 
                         results_puts[str(target)][ticker] = {
                             "raw_exp": exp,
@@ -1393,6 +1456,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                             "strike": round(k_val, 2),
                             "pct_diff": f"{pct_diff:+.1f}%",
                             "iv": round((iv_val or 0.45) * 100, 1),
+                            "iv_pctile": iv_pctile,
                             "prem": round(prem, 2),
                             "ann": round(ann_pct, 1),
                             "is_safe": k_val < market_data.get(ticker, {}).get("support", 0)
@@ -1421,6 +1485,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                         yield_pct = (prem / spot_price * 100) if spot_price > 0 else 0
                         ann_pct = yield_pct * 252 / actual_b_days
                         pct_diff = ((k_val - spot_price) / spot_price) * 100
+                        iv_pctile = calc_iv_percentile(iv_val, hist_vols)
 
                         results_calls[str(target)][ticker] = {
                             "raw_exp": exp,
@@ -1428,6 +1493,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                             "strike": round(k_val, 2),
                             "pct_diff": f"{pct_diff:+.1f}%",
                             "iv": round((iv_val or 0.45) * 100, 1),
+                            "iv_pctile": iv_pctile,
                             "prem": round(prem, 2),
                             "ann": round(ann_pct, 1),
                             "is_safe": k_val > market_data.get(ticker, {}).get("resistance", 0)
