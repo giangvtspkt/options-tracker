@@ -575,7 +575,6 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       if (res.ok) {
         // Do NOT aggressively call renderPositionsAndPL() here to prevent focus loss
-        // The background polling will gracefully update the UI shortly.
         if (field === 'exp' || field === 'ticker' || field === 'strike') {
           fetchData(true);
         }
@@ -683,15 +682,16 @@ HTML_CONTENT = """<!DOCTYPE html>
           const maxPl = (p.action === 'SELL') ? (p.prem * 100 * p.qty) : (-p.prem * 100 * p.qty);
           totalMaxUnrealized += maxPl;
 
+          if (isThisMonth) {
+            thisMonthCurrentUnrealized += maxPl;
+          }
+
           if (liveMark !== null) {
             const curPl = (p.action === 'SELL') 
               ? (p.prem - liveMark) * 100 * p.qty 
               : (liveMark - p.prem) * 100 * p.qty;
 
             totalCurrentUnrealized += curPl;
-            if (isThisMonth) {
-              thisMonthCurrentUnrealized += curPl;
-            }
           }
         }
       });
