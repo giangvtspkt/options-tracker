@@ -995,7 +995,7 @@ def send_whatsapp(payload: WhatsAppPayload):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/api/data")
-def get_options_data(tickers: str = "IREN,RKLB,AMD", contract_tickers: str = "", delta: float = 0.2):
+def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", delta: float = 0.2):
     positions, _ = get_positions_from_github()
     cache_store = load_cached_data()
     
