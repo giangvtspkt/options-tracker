@@ -54,6 +54,29 @@ def calc_iv_percentile(current_iv, hist_vols):
     count_below = sum(1 for v in hist_vols if v < current_iv)
     return round((count_below / len(hist_vols)) * 100.0, 1)
 
+def get_safe_mid_price(row_data):
+    """Safely calculates the mid price (Bid + Ask)/2, stripping out NaNs."""
+    try:
+        ask_raw = row_data.get("ask", 0)
+        bid_raw = row_data.get("bid", 0)
+        last_raw = row_data.get("lastPrice", 0)
+
+        ask = float(ask_raw) if ask_raw is not None and not math.isnan(float(ask_raw)) else 0.0
+        bid = float(bid_raw) if bid_raw is not None and not math.isnan(float(bid_raw)) else 0.0
+        last_p = float(last_raw) if last_raw is not None and not math.isnan(float(last_raw)) else 0.0
+
+        if bid > 0 and ask > 0:
+            return (bid + ask) / 2.0
+        if bid > 0:
+            return bid
+        if ask > 0:
+            return ask
+        if last_p > 0:
+            return last_p
+        return 0.01  # Safe minimum fallback
+    except Exception:
+        return 0.01
+
 def get_positions_from_github():
     if not GITHUB_TOKEN or not GITHUB_REPO:
         return [], None
@@ -787,7 +810,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             }
           } else {
             const intrinsic = p.type === 'CALL' ? Math.max((spot || 0) - p.strike, 0) : Math.max(p.strike - (spot || 0), 0);
-            maxPl = (intrinsic - p.prem) * 100 * p.qty;
+            closedPl = (intrinsic - p.prem) * 100 * p.qty;
             statusHtml = '<span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-bold">Closed</span>';
           }
           currentPl = maxPl;
@@ -1411,10 +1434,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                     min_idx = diffs.idxmin()
                     if diffs.loc[min_idx] <= 0.5:
                         row_data = df_opts.loc[min_idx]
-                        ask = float(row_data.get("ask", 0) or 0)
-                        bid = float(row_data.get("bid", 0) or 0)
-                        last_p = float(row_data.get("lastPrice", 0) or 0)
-                        mark = ask if ask > 0 else (last_p if last_p > 0 else (bid if bid > 0 else 0.01))
+                        mark = get_safe_mid_price(row_data)
                         
                         contract_key = f"{p_tkr}_{p_exp}_{k_target:.2f}_{p_type}"
                         live_positions[contract_key] = round(mark, 2)
@@ -1455,9 +1475,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
 
                     if best_put is not None:
                         row, k_val, iv_val = best_put
-                        bid = float(row.get('bid', 0) or 0)
-                        last_p = float(row.get('lastPrice', 0) or 0)
-                        prem = bid if bid > 0 else last_p
+                        prem = get_safe_mid_price(row)
                         yield_pct = (prem / k_val * 100) if k_val > 0 else 0
                         ann_pct = yield_pct * 252 / actual_b_days
                         pct_diff = ((k_val - spot_price) / spot_price) * 100
@@ -1495,9 +1513,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
 
                     if best_call is not None:
                         row, k_val, iv_val = best_call
-                        bid = float(row.get('bid', 0) or 0)
-                        last_p = float(row.get('lastPrice', 0) or 0)
-                        prem = bid if bid > 0 else last_p
+                        prem = get_safe_mid_price(row)
                         yield_pct = (prem / spot_price * 100) if spot_price > 0 else 0
                         ann_pct = yield_pct * 252 / actual_b_days
                         pct_diff = ((k_val - spot_price) / spot_price) * 100
