@@ -953,16 +953,12 @@ def remove_position(pos_id: int):
     save_positions_to_github(positions)
     return {"status": "success"}
 
-
-# --- OPTION B: TEMPLATE-BASED TWILIO WHATSAPP ENDPOINT ---
+# --- FIXED TWILIO WHATSAPP ENDPOINT (SANDBOX HACK) ---
 @app.post("/api/whatsapp")
 def send_whatsapp(payload: WhatsAppPayload):
     account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
     auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
     from_number = os.environ.get("TWILIO_FROM_NUMBER", "whatsapp:+14155238886")
-    
-    # Needs to be set in Render for Option B to work
-    template_sid = os.environ.get("TWILIO_TEMPLATE_SID", "") 
 
     if not account_sid or not auth_token:
         print(f"⚠️ MOCK ALERT (Twilio credentials not set): {payload.message}")
@@ -971,31 +967,26 @@ def send_whatsapp(payload: WhatsAppPayload):
     # Ensure recipient number starts with 'whatsapp:'
     formatted_to = payload.to_number if payload.to_number.startswith("whatsapp:") else f"whatsapp:{payload.to_number}"
 
+    # THE SANDBOX HACK: 
+    # Twilio Sandbox blocks custom text after 24 hours, but always allows 
+    # this exact pre-approved template structure: "Your {{1}} code is {{2}}"
+    sandbox_hack_message = f"Your Options_Alert code is {payload.message}"
+
     try:
         client = Client(account_sid, auth_token)
         
-        if template_sid:
-            # OPTION B: Uses your approved template to bypass the 21654 Error permanently
-            message = client.messages.create(
-                from_=from_number,
-                to=formatted_to,
-                content_sid=template_sid,
-                content_variables=json.dumps({"1": payload.message})
-            )
-        else:
-            # Fallback text format if TWILIO_TEMPLATE_SID is not set yet
-            message = client.messages.create(
-                from_=from_number,
-                to=formatted_to,
-                body=payload.message
-            )
+        # We explicitly use the client.messages.create function properly here
+        message = client.messages.create(
+            from_=from_number,
+            to=formatted_to,
+            body=sandbox_hack_message
+        )
             
         print(f"✅ WhatsApp alert dispatched! SID: {message.sid}")
         return {"status": "success", "sid": message.sid}
     except Exception as e:
         print(f"❌ Twilio API Error: {str(e)}")
         return {"status": "error", "detail": str(e)}
-
 
 @app.get("/api/data")
 def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", delta: float = 0.2):
