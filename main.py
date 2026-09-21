@@ -1,45 +1,107 @@
 import os
 import json
+from pathlib import Path
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from twilio.rest import Client
 
-from fastapi import FastAPI
+# 1. Initialize FastAPI app (Render looks specifically for 'app')
+app = FastAPI(title="Options Tracker API")
 
-# This exact variable name 'app' is what Render/Uvicorn looks for
-app = FastAPI()
+# Enable CORS so your frontend can call backend APIs seamlessly
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-
-def send_whatsapp_alert(to_number, alert_message):
-    """
-    Sends a WhatsApp notification using Twilio's Sandbox template format 
-    to comply with trial account content restrictions.
-    """
+# 2. Twilio WhatsApp Alert Function
+def send_whatsapp_alert(to_number: str, alert_message: str) -> dict:
     account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
     auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
-    
-    # TWILIO_FROM_NUMBER must remain the shared Twilio Sandbox number: whatsapp:+14155238886
     from_number = os.environ.get("TWILIO_FROM_NUMBER", "whatsapp:+14155238886")
-    
+
     if not account_sid or not auth_token:
-        print("⚠️ MOCK WHATSAPP ALERT (Missing Twilio Credentials):", alert_message)
-        return False
+        print(f"⚠️ MOCK ALERT (Twilio credentials not set in Render): {alert_message}")
+        return {"status": "mock", "message": "Twilio credentials missing; logged to console."}
+
+    # Ensure recipient number starts with 'whatsapp:'
+    formatted_to = to_number if to_number.startswith("whatsapp:") else f"whatsapp:{to_number}"
 
     try:
         client = Client(account_sid, auth_token)
-        
-        # Ensure the destination number has 'whatsapp:' prefixed correctly
-        formatted_to = to_number if to_number.startswith("whatsapp:") else f"whatsapp:{to_number}"
-        
-        # Using Twilio's standard built-in sandbox template 
-        # which maps your alert message into variable slot {"1": "..."}
+
+        # Twilio's default sandbox template SID with dynamic variable mapping
         message = client.messages.create(
             from_=from_number,
             content_sid="HX2335606caa639f1507e0c4fdecf10427",
             content_variables=json.dumps({"1": alert_message}),
             to=formatted_to
         )
-        print(f"✅ WhatsApp alert sent successfully! SID: {message.sid}")
-        return True
-        
+        print(f"✅ WhatsApp alert dispatched! SID: {message.sid}")
+        return {"status": "success", "sid": message.sid}
     except Exception as e:
         print(f"❌ Twilio API Error: {str(e)}")
-        return False
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# 3. API Request Schema
+class WhatsAppPayload(BaseModel):
+    to: str
+    message: str
+
+
+# 4. WhatsApp Endpoint
+@app.post("/api/whatsapp")
+def api_send_whatsapp(payload: WhatsAppPayload):
+    return send_whatsapp_alert(to_number=payload.to, alert_message=payload.message)
+
+
+# 5. Health Check Endpoint
+@app.get("/api/health")
+def health_check():
+    return {"status": "ok", "app": "Options Tracker is running smoothly"}
+
+
+# 6. Root Route: Serves index.html to fix the 404 error
+@app.get("/", response_class=HTMLResponse)
+def read_root():
+    # Check common locations where index.html might live
+    possible_paths = [
+        Path("index.html"),
+        Path("static/index.html"),
+        Path("templates/index.html"),
+        Path("dist/index.html")
+    ]
+
+    for p in possible_paths:
+        if p.exists():
+            return FileResponse(str(p))
+
+    # Fallback dashboard if index.html is in another folder
+    return """
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Options Tracker</title>
+        <style>
+          body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+          .card { background: #1e293b; padding: 2.5rem; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); text-align: center; max-width: 500px; border: 1px solid #334155; }
+          h1 { color: #38bdf8; margin-bottom: 0.5rem; font-size: 1.75rem; }
+          p { color: #94a3b8; font-size: 0.95rem; line-height: 1.5; }
+          .badge { display: inline-block; background: #059669; color: #fff; padding: 0.35rem 0.85rem; border-radius: 9999px; font-weight: 600; font-size: 0.85rem; margin-top: 1rem; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h1>Options Tracker Service</h1>
+          <p>The FastAPI backend and WhatsApp alert worker are online and healthy.</p>
+          <div class="badge">System Online</div>
+        </div>
+      </body>
+    </html>
+    """
