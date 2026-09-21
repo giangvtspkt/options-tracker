@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from twilio.rest import Client
 
-# 1. Initialize FastAPI app (Must be named 'app' for Render/Uvicorn)
+# 1. Initialize FastAPI app (Must be named 'app' for Render)
 app = FastAPI(title="Options Tracker API")
 
 app.add_middleware(
@@ -22,7 +22,7 @@ class WhatsAppPayload(BaseModel):
     to: str
     message: str
 
-# 3. Bug-Free WhatsApp Endpoint
+# 3. WhatsApp Endpoint (Bug-Free)
 @app.post("/api/whatsapp")
 def api_send_whatsapp(payload: WhatsAppPayload):
     account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
@@ -39,9 +39,7 @@ def api_send_whatsapp(payload: WhatsAppPayload):
     try:
         client = Client(account_sid, auth_token)
         
-        # BUG FIX: Reverted to 'body' instead of a hardcoded 'content_sid'.
-        # Since you joined the Sandbox, you have an active 24-hour session 
-        # and Twilio will natively allow this free-form text to pass.
+        # Uses standard 'body' since you joined the Sandbox session
         message = client.messages.create(
             from_=from_number,
             body=payload.message,
@@ -54,8 +52,7 @@ def api_send_whatsapp(payload: WhatsAppPayload):
         raise HTTPException(status_code=400, detail=str(e))
 
 # ========================================================
-# ⚠️ IMPORTANT: PASTE YOUR YFINANCE / OPTIONS ROUTES HERE
-# (Do not delete your backend logic if you had any)
+# ⚠️ PASTE ANY YFINANCE / OPTIONS ROUTES HERE IF YOU HAVE THEM
 # ========================================================
 
 # 4. Root Route: Fixes the 404 Error by serving your frontend HTML
@@ -72,7 +69,7 @@ def read_root():
         if p.exists():
             return FileResponse(p)
     
-    # Fallback UI if index.html is completely missing
+    # Fallback UI if index.html is missing
     return """
     <!DOCTYPE html>
     <html>
