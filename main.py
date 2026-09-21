@@ -2,6 +2,12 @@ import os
 import json
 from twilio.rest import Client
 
+from fastapi import FastAPI
+
+# This exact variable name 'app' is what Render/Uvicorn looks for
+app = FastAPI()
+
+
 def send_whatsapp_alert(to_number, alert_message):
     """
     Sends a WhatsApp notification using Twilio's Sandbox template format 
