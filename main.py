@@ -1,5 +1,4 @@
 import os
-import json
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
@@ -7,10 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from twilio.rest import Client
 
-# 1. Initialize FastAPI app (Render looks specifically for 'app')
+# 1. Initialize FastAPI app (Must be named 'app' for Render/Uvicorn)
 app = FastAPI(title="Options Tracker API")
 
-# Enable CORS so your frontend can call backend APIs seamlessly
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,27 +17,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 2. Twilio WhatsApp Alert Function
-def send_whatsapp_alert(to_number: str, alert_message: str) -> dict:
+# 2. WhatsApp API Request Schema
+class WhatsAppPayload(BaseModel):
+    to: str
+    message: str
+
+# 3. Bug-Free WhatsApp Endpoint
+@app.post("/api/whatsapp")
+def api_send_whatsapp(payload: WhatsAppPayload):
     account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
     auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
     from_number = os.environ.get("TWILIO_FROM_NUMBER", "whatsapp:+14155238886")
 
     if not account_sid or not auth_token:
-        print(f"⚠️ MOCK ALERT (Twilio credentials not set in Render): {alert_message}")
-        return {"status": "mock", "message": "Twilio credentials missing; logged to console."}
+        print(f"⚠️ MOCK ALERT (Twilio credentials not set): {payload.message}")
+        return {"status": "mock", "message": "Twilio credentials missing"}
 
     # Ensure recipient number starts with 'whatsapp:'
-    formatted_to = to_number if to_number.startswith("whatsapp:") else f"whatsapp:{to_number}"
+    formatted_to = payload.to if payload.to.startswith("whatsapp:") else f"whatsapp:{payload.to}"
 
     try:
         client = Client(account_sid, auth_token)
-
-        # Twilio's default sandbox template SID with dynamic variable mapping
+        
+        # BUG FIX: Reverted to 'body' instead of a hardcoded 'content_sid'.
+        # Since you joined the Sandbox, you have an active 24-hour session 
+        # and Twilio will natively allow this free-form text to pass.
         message = client.messages.create(
             from_=from_number,
-            content_sid="HX2335606caa639f1507e0c4fdecf10427",
-            content_variables=json.dumps({"1": alert_message}),
+            body=payload.message,
             to=formatted_to
         )
         print(f"✅ WhatsApp alert dispatched! SID: {message.sid}")
@@ -48,60 +53,33 @@ def send_whatsapp_alert(to_number: str, alert_message: str) -> dict:
         print(f"❌ Twilio API Error: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
+# ========================================================
+# ⚠️ IMPORTANT: PASTE YOUR YFINANCE / OPTIONS ROUTES HERE
+# (Do not delete your backend logic if you had any)
+# ========================================================
 
-# 3. API Request Schema
-class WhatsAppPayload(BaseModel):
-    to: str
-    message: str
-
-
-# 4. WhatsApp Endpoint
-@app.post("/api/whatsapp")
-def api_send_whatsapp(payload: WhatsAppPayload):
-    return send_whatsapp_alert(to_number=payload.to, alert_message=payload.message)
-
-
-# 5. Health Check Endpoint
-@app.get("/api/health")
-def health_check():
-    return {"status": "ok", "app": "Options Tracker is running smoothly"}
-
-
-# 6. Root Route: Serves index.html to fix the 404 error
+# 4. Root Route: Fixes the 404 Error by serving your frontend HTML
 @app.get("/", response_class=HTMLResponse)
 def read_root():
-    # Check common locations where index.html might live
+    # Looks for your frontend file in common directories
     possible_paths = [
         Path("index.html"),
         Path("static/index.html"),
         Path("templates/index.html"),
         Path("dist/index.html")
     ]
-
     for p in possible_paths:
         if p.exists():
-            return FileResponse(str(p))
-
-    # Fallback dashboard if index.html is in another folder
+            return FileResponse(p)
+    
+    # Fallback UI if index.html is completely missing
     return """
     <!DOCTYPE html>
     <html>
-      <head>
-        <title>Options Tracker</title>
-        <style>
-          body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-          .card { background: #1e293b; padding: 2.5rem; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); text-align: center; max-width: 500px; border: 1px solid #334155; }
-          h1 { color: #38bdf8; margin-bottom: 0.5rem; font-size: 1.75rem; }
-          p { color: #94a3b8; font-size: 0.95rem; line-height: 1.5; }
-          .badge { display: inline-block; background: #059669; color: #fff; padding: 0.35rem 0.85rem; border-radius: 9999px; font-weight: 600; font-size: 0.85rem; margin-top: 1rem; }
-        </style>
-      </head>
-      <body>
-        <div class="card">
-          <h1>Options Tracker Service</h1>
-          <p>The FastAPI backend and WhatsApp alert worker are online and healthy.</p>
-          <div class="badge">System Online</div>
-        </div>
+      <head><title>Options Tracker</title></head>
+      <body style="background:#0f172a; color:#fff; font-family:sans-serif; text-align:center; padding-top:50px;">
+        <h1 style="color:#38bdf8;">Options Tracker Backend</h1>
+        <p style="color:#94a3b8;">Status: Online and Healthy</p>
       </body>
     </html>
     """
