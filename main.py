@@ -636,6 +636,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         const dte = Math.ceil((new Date(p.exp) - new Date(todayStr)) / 86400000);
 
         let maxPl = 0, currentPl = 0, statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
+        let alertMsg = null;
 
         if (isExpired) {
           if (p.action === 'SELL') {
@@ -659,12 +660,40 @@ HTML_CONTENT = """<!DOCTYPE html>
           if (p.action === 'SELL' && spot !== null) {
             const pctFromStrike = ((spot - p.strike) / p.strike) * 100;
             if (p.type === 'PUT') {
-              if (spot <= p.strike || (dte <= alertCriteria.putCritDte && pctFromStrike <= 1.5)) statusHtml = '<span class="px-1.5 py-0.5 rounded bg-rose-600 text-white font-extrabold animate-pulse whitespace-nowrap">ROLL / ASSIGN NOW</span>';
-              else if (pctFromStrike <= alertCriteria.putWarnPct || (dte <= alertCriteria.putWarnDte && currentPl < 0)) statusHtml = '<span class="px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-extrabold whitespace-nowrap">ROLL SOON</span>';
+              if (spot <= p.strike || (dte <= alertCriteria.putCritDte && pctFromStrike <= 1.5)) {
+                statusHtml = '<span class="px-1.5 py-0.5 rounded bg-rose-600 text-white font-extrabold animate-pulse whitespace-nowrap">ROLL / ASSIGN NOW</span>';
+                alertMsg = `🚨 CRITICAL: ${p.ticker} $${p.strike} Put needs attention (ROLL / ASSIGN NOW). Spot is $${spot.toFixed(2)} (${pctFromStrike > 0 ? '+' : ''}${pctFromStrike.toFixed(1)}%).`;
+              } else if (pctFromStrike <= alertCriteria.putWarnPct || (dte <= alertCriteria.putWarnDte && currentPl < 0)) {
+                statusHtml = '<span class="px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-extrabold whitespace-nowrap">ROLL SOON</span>';
+                alertMsg = `⚠️ WARNING: ${p.ticker} $${p.strike} Put is tested (ROLL SOON). Spot is $${spot.toFixed(2)} (${pctFromStrike > 0 ? '+' : ''}${pctFromStrike.toFixed(1)}%). DTE: ${dte}d.`;
+              }
             } else if (p.type === 'CALL') {
-              if (spot >= p.strike) statusHtml = '<span class="px-1.5 py-0.5 rounded bg-purple-700 text-white font-bold whitespace-nowrap">MAX PROFIT / ASSIGN</span>';
-              else if (pctFromStrike >= -alertCriteria.callWarnPct) statusHtml = '<span class="px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-bold whitespace-nowrap">TESTED</span>';
+              if (spot >= p.strike) {
+                statusHtml = '<span class="px-1.5 py-0.5 rounded bg-purple-700 text-white font-bold whitespace-nowrap">MAX PROFIT / ASSIGN</span>';
+              } else if (pctFromStrike >= -alertCriteria.callWarnPct) {
+                statusHtml = '<span class="px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-bold whitespace-nowrap">TESTED</span>';
+                alertMsg = `⚠️ WARNING: ${p.ticker} $${p.strike} Call is tested. Spot is $${spot.toFixed(2)}.`;
+              }
             }
+          }
+        }
+
+        // --- Active Position WhatsApp Trigger (1-hour cooldown per specific position) ---
+        if (alertMsg && alertCriteria.waEnabled && alertCriteria.waNumber) {
+          const now = Date.now();
+          const posCooldownKey = `wa_pos_alert_${p.id}`;
+          const lastPosAlert = parseInt(localStorage.getItem(posCooldownKey) || '0', 10);
+
+          if (now - lastPosAlert > 3600000) { // 3,600,000 ms = 1 Hour
+            localStorage.setItem(posCooldownKey, now.toString());
+            fetch('/api/whatsapp', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                to_number: alertCriteria.waNumber,
+                message: alertMsg
+              })
+            }).catch(e => console.error("Position WhatsApp Error:", e));
           }
         }
 
