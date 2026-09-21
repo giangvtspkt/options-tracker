@@ -10,6 +10,7 @@ import json
 import base64
 import requests
 import tempfile
+from twilio.rest import Client
 
 app = FastAPI()
 
@@ -21,7 +22,8 @@ GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
 # --- WhatsApp / Twilio Config ---
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "whatsapp:+17372508034") 
+# Must default to the Twilio Sandbox sender number
+TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "whatsapp:+14155238886") 
 
 CACHE_FILE_PATH = os.path.join(tempfile.gettempdir(), "options_cache_data.json")
 
@@ -951,36 +953,49 @@ def remove_position(pos_id: int):
     save_positions_to_github(positions)
     return {"status": "success"}
 
+
+# --- OPTION B: TEMPLATE-BASED TWILIO WHATSAPP ENDPOINT ---
 @app.post("/api/whatsapp")
 def send_whatsapp(payload: WhatsAppPayload):
-    """
-    Sends a WhatsApp message using Twilio's API.
-    If Env Vars are missing, prints to console to avoid crashing.
-    """
-    clean_number = payload.to_number.replace('whatsapp:', '').strip()
-    if not clean_number.startswith('+'):
-        clean_number = f"+{clean_number}"
-        
-    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
-        print(f"⚠️ MOCK WHATSAPP ALERT (Twilio Tokens Missing): To: {clean_number} | Body: {payload.message}")
-        return {"status": "mock_success", "detail": "Tokens not configured, printed to console."}
-        
-    url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
-    data = {
-        "From": TWILIO_FROM_NUMBER,
-        "To": f"whatsapp:{clean_number}",
-        "Body": payload.message
-    }
+    account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
+    auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
+    from_number = os.environ.get("TWILIO_FROM_NUMBER", "whatsapp:+14155238886")
     
+    # Needs to be set in Render for Option B to work
+    template_sid = os.environ.get("TWILIO_TEMPLATE_SID", "") 
+
+    if not account_sid or not auth_token:
+        print(f"⚠️ MOCK ALERT (Twilio credentials not set): {payload.message}")
+        return {"status": "mock", "message": "Twilio credentials missing"}
+
+    # Ensure recipient number starts with 'whatsapp:'
+    formatted_to = payload.to_number if payload.to_number.startswith("whatsapp:") else f"whatsapp:{payload.to_number}"
+
     try:
-        res = requests.post(url, data=data, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN), timeout=5)
-        if res.status_code in [200, 201]:
-            return {"status": "success"}
+        client = Client(account_sid, auth_token)
+        
+        if template_sid:
+            # OPTION B: Uses your approved template to bypass the 21654 Error permanently
+            message = client.messages.create(
+                from_=from_number,
+                to=formatted_to,
+                content_sid=template_sid,
+                content_variables=json.dumps({"1": payload.message})
+            )
         else:
-            print("Twilio API Error:", res.text)
-            return {"status": "error", "detail": res.text}
+            # Fallback text format if TWILIO_TEMPLATE_SID is not set yet
+            message = client.messages.create(
+                from_=from_number,
+                to=formatted_to,
+                body=payload.message
+            )
+            
+        print(f"✅ WhatsApp alert dispatched! SID: {message.sid}")
+        return {"status": "success", "sid": message.sid}
     except Exception as e:
+        print(f"❌ Twilio API Error: {str(e)}")
         return {"status": "error", "detail": str(e)}
+
 
 @app.get("/api/data")
 def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", delta: float = 0.2):
