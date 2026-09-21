@@ -222,5 +222,17 @@
     "exp": "2026-10-16",
     "trade_date": "2026-09-18",
     "broker": "ibkr"
+  },
+  {
+    "id": 1789999211321,
+    "action": "SELL",
+    "type": "CALL",
+    "ticker": "IREN",
+    "strike": 50.0,
+    "prem": 3.25,
+    "qty": 3,
+    "exp": "2026-10-16",
+    "trade_date": "2026-09-21",
+    "broker": "ibkr"
   }
 ]
