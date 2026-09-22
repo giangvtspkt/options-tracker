@@ -234,5 +234,17 @@
     "exp": "2026-10-16",
     "trade_date": "2026-09-21",
     "broker": "ibkr"
+  },
+  {
+    "id": 1790091695729,
+    "action": "SELL",
+    "type": "CALL",
+    "ticker": "AMD",
+    "strike": 720.0,
+    "prem": 9.8,
+    "qty": 2,
+    "exp": "2026-10-23",
+    "trade_date": "2026-09-22",
+    "broker": "ibkr"
   }
 ]
