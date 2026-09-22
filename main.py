@@ -21,7 +21,7 @@ GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
 # --- Twilio Config ---
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "whatsapp:+17372508034") 
+TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "+17372508034") 
 
 CACHE_FILE_PATH = os.path.join(tempfile.gettempdir(), "options_cache_data.json")
 
