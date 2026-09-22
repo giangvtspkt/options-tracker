@@ -21,7 +21,12 @@ GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
 # --- Twilio Config ---
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "+17372508034") 
+TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "+17372508034")
+# WhatsApp sender MUST be a WhatsApp-enabled sender on the same Twilio account,
+# e.g. TWILIO_WHATSAPP_FROM=whatsapp:+14155238886 (sandbox) or your registered
+# WhatsApp sender. Never reuse the SMS number for WhatsApp.
+TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "")
+TWILIO_SMS_FROM = os.getenv("TWILIO_SMS_FROM", TWILIO_FROM_NUMBER)
 
 CACHE_FILE_PATH = os.path.join(tempfile.gettempdir(), "options_cache_data.json")
 
@@ -974,7 +979,6 @@ def remove_position(pos_id: int):
 def send_alert(payload: AlertPayload):
     account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
     auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
-    default_from = os.environ.get("TWILIO_FROM_NUMBER", "+17372508034")
     template_sid = os.environ.get("TWILIO_TEMPLATE_SID", "").strip()
 
     if not account_sid or not auth_token:
@@ -985,14 +989,26 @@ def send_alert(payload: AlertPayload):
     is_whatsapp = to_num.lower().startswith("whatsapp:")
 
     if is_whatsapp:
-        formatted_to = to_num
-        wa_from = os.environ.get("TWILIO_WHATSAPP_FROM", "")
+        # WhatsApp MUST use a WhatsApp-enabled sender owned by the same Twilio
+        # account, e.g. TWILIO_WHATSAPP_FROM=whatsapp:+14155238886 (sandbox)
+        # or your registered WhatsApp sender. Never derive it from the SMS number.
+        wa_from = os.environ.get("TWILIO_WHATSAPP_FROM", "").strip()
         if not wa_from:
-            wa_from = default_from if default_from.startswith("whatsapp:") else f"whatsapp:{default_from}"
+            err = "TWILIO_WHATSAPP_FROM is not set. Set it to your WhatsApp sender, e.g. whatsapp:+14155238886."
+            print(f"❌ {err}")
+            return {"status": "error", "detail": err}
+        if not wa_from.lower().startswith("whatsapp:"):
+            wa_from = f"whatsapp:{wa_from}"
         from_number = wa_from
+        formatted_to = to_num
     else:
+        sms_from = os.environ.get("TWILIO_SMS_FROM", os.environ.get("TWILIO_FROM_NUMBER", "")).strip()
+        if not sms_from:
+            err = "TWILIO_SMS_FROM / TWILIO_FROM_NUMBER is not set."
+            print(f"❌ {err}")
+            return {"status": "error", "detail": err}
+        from_number = sms_from.replace("whatsapp:", "")
         formatted_to = to_num.replace("whatsapp:", "")
-        from_number = default_from.replace("whatsapp:", "")
 
     url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
     
