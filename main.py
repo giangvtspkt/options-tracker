@@ -22,7 +22,6 @@ GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
 # --- WhatsApp / Twilio Config ---
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-# Must default to the Twilio Sandbox sender number
 TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "whatsapp:+17372508034") 
 
 CACHE_FILE_PATH = os.path.join(tempfile.gettempdir(), "options_cache_data.json")
@@ -969,6 +968,7 @@ def send_whatsapp(payload: WhatsAppPayload):
     account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
     auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
     from_number = os.environ.get("TWILIO_FROM_NUMBER", "whatsapp:+17372508034")
+    template_sid = os.environ.get("TWILIO_TEMPLATE_SID", "").strip()
 
     if not account_sid or not auth_token:
         print(f"⚠️ MOCK ALERT (Twilio credentials not set): {payload.message}")
@@ -978,11 +978,21 @@ def send_whatsapp(payload: WhatsAppPayload):
 
     try:
         client = Client(account_sid, auth_token)
-        message = client.messages.create(
-            from_=from_number,
-            to=formatted_to,
-            body=payload.message
-        )
+        
+        if template_sid:
+            message = client.messages.create(
+                from_=from_number,
+                to=formatted_to,
+                content_sid=template_sid,
+                content_variables=json.dumps({"1": payload.message})
+            )
+        else:
+            message = client.messages.create(
+                from_=from_number,
+                to=formatted_to,
+                body=payload.message
+            )
+            
         print(f"✅ WhatsApp alert dispatched! SID: {message.sid}")
         return {"status": "success", "sid": message.sid}
     except Exception as e:
