@@ -18,6 +18,11 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
 
+# --- Twilio Config ---
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "+17372508034") 
+
 CACHE_FILE_PATH = os.path.join(tempfile.gettempdir(), "options_cache_data.json")
 
 def norm_cdf(x):
@@ -209,19 +214,19 @@ HTML_CONTENT = """<!DOCTYPE html>
           <label class="font-bold text-amber-900 block mb-0.5">🔥 Call High IV (%ile)</label>
           <input id="critCallHighIvPctile" type="number" step="5" class="w-full border rounded p-1 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
         </div>
-        <!-- SMS Settings -->
+        <!-- Alert Recipient Settings -->
         <div class="col-span-2 sm:col-span-3 mt-1 pt-2 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center gap-2">
-          <label class="font-bold text-blue-800 flex items-center gap-1.5 whitespace-nowrap bg-blue-50 px-2 py-1 rounded border border-blue-200">
+          <label class="font-bold text-emerald-800 flex items-center gap-1.5 whitespace-nowrap bg-emerald-50 px-2 py-1 rounded border border-emerald-200">
             <input type="checkbox" id="critWaEnabled" onchange="saveAlertCriteria()">
-            <span>Enable SMS Alerts</span>
+            <span>Enable Twilio Alerts</span>
           </label>
-          <input id="critWaNumber" type="text" placeholder="Format: +1234567890" class="w-full sm:w-64 border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()" onblur="saveAlertCriteria()">
+          <input id="critWaNumber" type="text" placeholder="Format: +1234567890 (SMS) or whatsapp:+1234567890" class="w-full sm:w-80 border rounded p-1 text-xs bg-white font-mono" onchange="saveAlertCriteria()" onblur="saveAlertCriteria()">
           <span class="text-[9px] text-slate-400">1-hour cooldown per ticker to prevent spam.</span>
         </div>
       </div>
     </div>
 
-    <!-- P/L Metrics Cards (6-Column Grid) -->
+    <!-- P/L Metrics Cards -->
     <div class="grid grid-cols-2 sm:grid-cols-6 gap-2 mb-3">
       <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
         <div class="text-[10px] font-bold text-slate-500">Total Realized</div>
@@ -451,11 +456,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       alertCriteria.callHighIvPctile = parseFloat(document.getElementById('critCallHighIvPctile').value) || 80.0;
       alertCriteria.waEnabled = document.getElementById('critWaEnabled').checked;
       
-      // Auto-strip whatsapp tags if user enters it accidentally
-      let rawNumber = document.getElementById('critWaNumber').value.trim();
-      rawNumber = rawNumber.replace("whatsapp:", "");
-      alertCriteria.waNumber = rawNumber;
-      document.getElementById('critWaNumber').value = rawNumber;
+      // Preserve user input exactly so dual SMS/WhatsApp routing works on backend
+      alertCriteria.waNumber = document.getElementById('critWaNumber').value.trim();
       
       localStorage.setItem('alertCriteria', JSON.stringify(alertCriteria));
       renderPositionsAndPL();
@@ -679,7 +681,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           }
         }
 
-        // --- SMS Alert Trigger ---
+        // --- Alert Dispatcher ---
         if (alertMsg && alertCriteria.waEnabled && alertCriteria.waNumber) {
           const now = Date.now();
           const posCooldownKey = `wa_pos_alert_${p.id}`;
@@ -694,7 +696,7 @@ HTML_CONTENT = """<!DOCTYPE html>
                 to_number: alertCriteria.waNumber,
                 message: alertMsg
               })
-            }).catch(e => console.error("Position SMS Error:", e));
+            }).catch(e => console.error("Position Alert Error:", e));
           }
         }
 
@@ -780,10 +782,14 @@ HTML_CONTENT = """<!DOCTYPE html>
       const btn = document.getElementById('refreshBtn'), spinner = document.getElementById('btnSpinner'), status = document.getElementById('status');
       if (!hasLoadedOnce || !isSilent) { btn.disabled = true; spinner.classList.remove('hidden'); document.getElementById('btnText').innerText = "Loading..."; }
       
-      const tickers = document.getElementById('tickers').value;
-      const delta = document.getElementById('delta').value;
+      const tickersInput = document.getElementById('tickers').value;
+      const deltaInput = document.getElementById('delta').value;
       
-      // Save Tickers & Delta dynamically to LocalStorage
+      // Fallback safely so FastAPI doesn't throw a 422 Unprocessable Entity error if inputs are empty
+      const tickers = tickersInput || "IREN,RKLB";
+      const delta = deltaInput || "0.2";
+      
+      // Save Inputs dynamically to LocalStorage
       localStorage.setItem('savedTickers', tickers);
       localStorage.setItem('savedDelta', delta);
       
@@ -885,7 +891,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         headerNotice.innerText = `🔥 High IVP ${tableType} Alert (\u2265 ${highIvPctileThreshold}%ile)`;
         headerNotice.classList.remove('hidden');
         
-        // --- SMS Alert Trigger ---
+        // --- Alert Trigger Logic ---
         if (alertCriteria.waEnabled && alertCriteria.waNumber) {
           const now = Date.now();
           tickers.forEach(t => {
@@ -897,9 +903,9 @@ HTML_CONTENT = """<!DOCTYPE html>
               const cooldownKey = `wa_alert_${t}_${tableType}`;
               const lastAlertTime = parseInt(localStorage.getItem(cooldownKey) || '0', 10);
               
-              if (now - lastAlertTime > 3600000) { // 1-Hour Cooldown
+              if (now - lastAlertTime > 3600000) { 
                 localStorage.setItem(cooldownKey, now.toString());
-                const cleanExp = matchingItem.exp.replace(/<[^>]+>/g, ' '); // Strip HTML tags
+                const cleanExp = matchingItem.exp.replace(/<[^>]+>/g, ' ');
                 
                 fetch('/api/whatsapp', {
                   method: 'POST',
@@ -908,7 +914,7 @@ HTML_CONTENT = """<!DOCTYPE html>
                     to_number: alertCriteria.waNumber, 
                     message: `🔥 Options Alert: ${t} ${tableType} IV Percentile is high (${matchingItem.iv}% / ${Math.round(matchingItem.iv_pctile)}%ile) for ${cleanExp} strike $${matchingItem.strike}.`
                   })
-                }).catch(e => console.error("SMS API Error:", e));
+                }).catch(e => console.error("Alert API Error:", e));
               }
             }
           });
@@ -919,7 +925,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     }
 
     (async () => {
-      // Load saved inputs before first fetch
       const savedTickers = localStorage.getItem('savedTickers');
       if (savedTickers) document.getElementById('tickers').value = savedTickers;
       const savedDelta = localStorage.getItem('savedDelta');
@@ -964,44 +969,59 @@ def remove_position(pos_id: int):
     save_positions_to_github(positions)
     return {"status": "success"}
 
-# --- Twilio SMS Endpoint ---
+# --- Twilio Alert Endpoint (SMS & WhatsApp Ready) ---
 @app.post("/api/whatsapp")
-def send_whatsapp(payload: AlertPayload):
+def send_alert(payload: AlertPayload):
     account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
     auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
-    
-    # Strip any leftover whatsapp tags to guarantee it sends as an SMS
-    raw_from = os.environ.get("TWILIO_FROM_NUMBER", "+17372508034")
-    from_number = raw_from.replace("whatsapp:", "")
+    default_from = os.environ.get("TWILIO_FROM_NUMBER", "+17372508034")
+    template_sid = os.environ.get("TWILIO_TEMPLATE_SID", "").strip()
 
     if not account_sid or not auth_token:
-        print(f"⚠️ MOCK ALERT: {payload.message}")
+        print(f"⚠️ MOCK ALERT (Twilio credentials not set): {payload.message}")
         return {"status": "mock", "message": "Twilio credentials missing"}
 
-    formatted_to = payload.to_number.replace("whatsapp:", "")
-    
+    to_num = payload.to_number.strip()
+    is_whatsapp = to_num.lower().startswith("whatsapp:")
+
+    if is_whatsapp:
+        formatted_to = to_num
+        wa_from = os.environ.get("TWILIO_WHATSAPP_FROM", "")
+        if not wa_from:
+            wa_from = default_from if default_from.startswith("whatsapp:") else f"whatsapp:{default_from}"
+        from_number = wa_from
+    else:
+        formatted_to = to_num.replace("whatsapp:", "")
+        from_number = default_from.replace("whatsapp:", "")
+
     url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
     
     data = {
         "From": from_number,
-        "To": formatted_to,
-        "Body": payload.message
+        "To": formatted_to
     }
 
+    if is_whatsapp and template_sid:
+        data["ContentSid"] = template_sid
+        data["ContentVariables"] = json.dumps({"1": payload.message})
+    else:
+        data["Body"] = payload.message
+
     try:
-        response = requests.post(url, data=data, auth=(account_sid, auth_token))
+        response = requests.post(url, data=data, auth=(account_sid, auth_token), timeout=10)
         resp_json = response.json()
         
         if response.status_code in [200, 201]:
-            print(f"✅ SMS alert dispatched! SID: {resp_json.get('sid')}")
-            return {"status": "success", "sid": resp_json.get('sid')}
+            channel = "WhatsApp" if is_whatsapp else "SMS"
+            print(f"✅ Alert dispatched via {channel}! SID: {resp_json.get('sid')}")
+            return {"status": "success", "sid": resp_json.get("sid")}
         else:
             error_msg = resp_json.get("message", "Unknown Twilio API Error")
-            print(f"❌ Twilio SMS Error: {error_msg}")
+            print(f"❌ Twilio Error ({response.status_code}): {error_msg}")
             return {"status": "error", "detail": error_msg}
     except Exception as e:
         error_msg = str(e)
-        print(f"❌ HTTP Request Error caught safely: {error_msg}")
+        print(f"❌ Request Error: {error_msg}")
         return {"status": "error", "detail": error_msg}
 
 @app.get("/api/data")
