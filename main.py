@@ -222,7 +222,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             <input type="checkbox" id="critWaEnabled" onchange="saveAlertCriteria()">
             <span>Enable WhatsApp Alerts</span>
           </label>
-          <input id="critWaNumber" type="text" placeholder="Format: whatsapp:+1234567890" class="w-full sm:w-64 border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
+          <input id="critWaNumber" type="text" placeholder="Format: whatsapp:+1234567890" class="w-full sm:w-64 border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()" onblur="saveAlertCriteria()">
           <span class="text-[9px] text-slate-400">1-hour cooldown per ticker to prevent spam.</span>
         </div>
       </div>
@@ -680,13 +680,12 @@ HTML_CONTENT = """<!DOCTYPE html>
           }
         }
 
-        // --- Active Position WhatsApp Trigger (1-hour cooldown per specific position) ---
         if (alertMsg && alertCriteria.waEnabled && alertCriteria.waNumber) {
           const now = Date.now();
           const posCooldownKey = `wa_pos_alert_${p.id}`;
           const lastPosAlert = parseInt(localStorage.getItem(posCooldownKey) || '0', 10);
 
-          if (now - lastPosAlert > 3600000) { // 3,600,000 ms = 1 Hour
+          if (now - lastPosAlert > 3600000) { 
             localStorage.setItem(posCooldownKey, now.toString());
             fetch('/api/whatsapp', {
               method: 'POST',
@@ -781,7 +780,13 @@ HTML_CONTENT = """<!DOCTYPE html>
       const btn = document.getElementById('refreshBtn'), spinner = document.getElementById('btnSpinner'), status = document.getElementById('status');
       if (!hasLoadedOnce || !isSilent) { btn.disabled = true; spinner.classList.remove('hidden'); document.getElementById('btnText').innerText = "Loading..."; }
       
-      const tickers = document.getElementById('tickers').value, delta = document.getElementById('delta').value;
+      const tickers = document.getElementById('tickers').value;
+      const delta = document.getElementById('delta').value;
+      
+      // Save Tickers & Delta dynamically to LocalStorage
+      localStorage.setItem('savedTickers', tickers);
+      localStorage.setItem('savedDelta', delta);
+      
       const contractTickers = Array.from(new Set(cloudPositions.map(p => (p.ticker || '').trim().toUpperCase()))).filter(Boolean);
 
       try {
@@ -914,6 +919,12 @@ HTML_CONTENT = """<!DOCTYPE html>
     }
 
     (async () => {
+      // Load saved inputs before first fetch
+      const savedTickers = localStorage.getItem('savedTickers');
+      if (savedTickers) document.getElementById('tickers').value = savedTickers;
+      const savedDelta = localStorage.getItem('savedDelta');
+      if (savedDelta) document.getElementById('delta').value = savedDelta;
+
       loadAlertCriteria();
       await loadCloudPositions();
       await fetchData(false);
@@ -953,15 +964,11 @@ def remove_position(pos_id: int):
     save_positions_to_github(positions)
     return {"status": "success"}
 
-# --- FIXED TWILIO WHATSAPP ENDPOINT (SANDBOX HACK) ---
 @app.post("/api/whatsapp")
 def send_whatsapp(payload: WhatsAppPayload):
     account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
     auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
     from_number = os.environ.get("TWILIO_FROM_NUMBER", "whatsapp:+17372508034")
-    
-    # Optional: If you created a template in Twilio, put its HX... ID here
-    template_sid = os.environ.get("TWILIO_TEMPLATE_SID", "")
 
     if not account_sid or not auth_token:
         print(f"⚠️ MOCK ALERT (Twilio credentials not set): {payload.message}")
@@ -971,28 +978,17 @@ def send_whatsapp(payload: WhatsAppPayload):
 
     try:
         client = Client(account_sid, auth_token)
-        
-        # If a template SID is provided in Render, use it
-        if template_sid:
-            message = client.messages.create(
-                from_=from_number,
-                to=formatted_to,
-                content_sid=template_sid,
-                content_variables=json.dumps({"1": payload.message})
-            )
-        else:
-            # Fix for strict Twilio accounts: Passing body safely through parameters
-            message = client.messages.create(
-                from_=from_number,
-                to=formatted_to,
-                body=payload.message
-            )
-            
+        message = client.messages.create(
+            from_=from_number,
+            to=formatted_to,
+            body=payload.message
+        )
         print(f"✅ WhatsApp alert dispatched! SID: {message.sid}")
         return {"status": "success", "sid": message.sid}
     except Exception as e:
-        print(f"❌ Twilio API Error: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
+        error_msg = str(e)
+        print(f"❌ Twilio API Error caught safely: {error_msg}")
+        return {"status": "error", "detail": error_msg}
 
 @app.get("/api/data")
 def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", delta: float = 0.2):
