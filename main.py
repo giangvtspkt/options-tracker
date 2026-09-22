@@ -133,7 +133,7 @@ class PositionModel(BaseModel):
     def to_dict(self):
         return self.model_dump() if hasattr(self, "model_dump") else self.dict()
 
-class WhatsAppPayload(BaseModel):
+class AlertPayload(BaseModel):
     message: str
     to_number: str
 
@@ -209,13 +209,13 @@ HTML_CONTENT = """<!DOCTYPE html>
           <label class="font-bold text-amber-900 block mb-0.5">🔥 Call High IV (%ile)</label>
           <input id="critCallHighIvPctile" type="number" step="5" class="w-full border rounded p-1 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
         </div>
-        <!-- WhatsApp Settings -->
+        <!-- SMS Settings -->
         <div class="col-span-2 sm:col-span-3 mt-1 pt-2 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center gap-2">
-          <label class="font-bold text-emerald-800 flex items-center gap-1.5 whitespace-nowrap bg-emerald-50 px-2 py-1 rounded border border-emerald-200">
+          <label class="font-bold text-blue-800 flex items-center gap-1.5 whitespace-nowrap bg-blue-50 px-2 py-1 rounded border border-blue-200">
             <input type="checkbox" id="critWaEnabled" onchange="saveAlertCriteria()">
-            <span>Enable WhatsApp Alerts</span>
+            <span>Enable SMS Alerts</span>
           </label>
-          <input id="critWaNumber" type="text" placeholder="Format: whatsapp:+1234567890" class="w-full sm:w-64 border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()" onblur="saveAlertCriteria()">
+          <input id="critWaNumber" type="text" placeholder="Format: +1234567890" class="w-full sm:w-64 border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()" onblur="saveAlertCriteria()">
           <span class="text-[9px] text-slate-400">1-hour cooldown per ticker to prevent spam.</span>
         </div>
       </div>
@@ -450,7 +450,13 @@ HTML_CONTENT = """<!DOCTYPE html>
       alertCriteria.putHighIvPctile = parseFloat(document.getElementById('critPutHighIvPctile').value) || 85.0;
       alertCriteria.callHighIvPctile = parseFloat(document.getElementById('critCallHighIvPctile').value) || 80.0;
       alertCriteria.waEnabled = document.getElementById('critWaEnabled').checked;
-      alertCriteria.waNumber = document.getElementById('critWaNumber').value.trim();
+      
+      // Auto-strip whatsapp tags if user enters it accidentally
+      let rawNumber = document.getElementById('critWaNumber').value.trim();
+      rawNumber = rawNumber.replace("whatsapp:", "");
+      alertCriteria.waNumber = rawNumber;
+      document.getElementById('critWaNumber').value = rawNumber;
+      
       localStorage.setItem('alertCriteria', JSON.stringify(alertCriteria));
       renderPositionsAndPL();
       renderBothTables();
@@ -673,6 +679,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           }
         }
 
+        // --- SMS Alert Trigger ---
         if (alertMsg && alertCriteria.waEnabled && alertCriteria.waNumber) {
           const now = Date.now();
           const posCooldownKey = `wa_pos_alert_${p.id}`;
@@ -687,7 +694,7 @@ HTML_CONTENT = """<!DOCTYPE html>
                 to_number: alertCriteria.waNumber,
                 message: alertMsg
               })
-            }).catch(e => console.error("Position WhatsApp Error:", e));
+            }).catch(e => console.error("Position SMS Error:", e));
           }
         }
 
@@ -878,7 +885,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         headerNotice.innerText = `🔥 High IVP ${tableType} Alert (\u2265 ${highIvPctileThreshold}%ile)`;
         headerNotice.classList.remove('hidden');
         
-        // WhatsApp Alert Trigger Logic (Per Ticker + Option Type)
+        // --- SMS Alert Trigger ---
         if (alertCriteria.waEnabled && alertCriteria.waNumber) {
           const now = Date.now();
           tickers.forEach(t => {
@@ -901,7 +908,7 @@ HTML_CONTENT = """<!DOCTYPE html>
                     to_number: alertCriteria.waNumber, 
                     message: `🔥 Options Alert: ${t} ${tableType} IV Percentile is high (${matchingItem.iv}% / ${Math.round(matchingItem.iv_pctile)}%ile) for ${cleanExp} strike $${matchingItem.strike}.`
                   })
-                }).catch(e => console.error("WhatsApp API Error:", e));
+                }).catch(e => console.error("SMS API Error:", e));
               }
             }
           });
@@ -957,41 +964,40 @@ def remove_position(pos_id: int):
     save_positions_to_github(positions)
     return {"status": "success"}
 
+# --- Twilio SMS Endpoint ---
 @app.post("/api/whatsapp")
-def send_whatsapp(payload: WhatsAppPayload):
+def send_whatsapp(payload: AlertPayload):
     account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
     auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
-    from_number = os.environ.get("TWILIO_FROM_NUMBER", "whatsapp:+17372508034")
-    template_sid = os.environ.get("TWILIO_TEMPLATE_SID", "").strip()
+    
+    # Strip any leftover whatsapp tags to guarantee it sends as an SMS
+    raw_from = os.environ.get("TWILIO_FROM_NUMBER", "+17372508034")
+    from_number = raw_from.replace("whatsapp:", "")
 
     if not account_sid or not auth_token:
-        print(f"⚠️ MOCK ALERT (Twilio credentials not set): {payload.message}")
+        print(f"⚠️ MOCK ALERT: {payload.message}")
         return {"status": "mock", "message": "Twilio credentials missing"}
 
-    formatted_to = payload.to_number if payload.to_number.startswith("whatsapp:") else f"whatsapp:{payload.to_number}"
+    formatted_to = payload.to_number.replace("whatsapp:", "")
+    
     url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
     
     data = {
         "From": from_number,
-        "To": formatted_to
+        "To": formatted_to,
+        "Body": payload.message
     }
-    
-    if template_sid:
-        data["ContentSid"] = template_sid
-        data["ContentVariables"] = json.dumps({"1": payload.message})
-    else:
-        data["Body"] = payload.message
 
     try:
         response = requests.post(url, data=data, auth=(account_sid, auth_token))
         resp_json = response.json()
         
         if response.status_code in [200, 201]:
-            print(f"✅ WhatsApp alert dispatched! SID: {resp_json.get('sid')}")
+            print(f"✅ SMS alert dispatched! SID: {resp_json.get('sid')}")
             return {"status": "success", "sid": resp_json.get('sid')}
         else:
             error_msg = resp_json.get("message", "Unknown Twilio API Error")
-            print(f"❌ Twilio API Error: {error_msg}")
+            print(f"❌ Twilio SMS Error: {error_msg}")
             return {"status": "error", "detail": error_msg}
     except Exception as e:
         error_msg = str(e)
