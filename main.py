@@ -10,7 +10,6 @@ import json
 import base64
 import requests
 import tempfile
-from twilio.rest import Client
 
 app = FastAPI()
 
@@ -18,11 +17,6 @@ app = FastAPI()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
-
-# --- WhatsApp / Twilio Config ---
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "whatsapp:+17372508034") 
 
 CACHE_FILE_PATH = os.path.join(tempfile.gettempdir(), "options_cache_data.json")
 
@@ -975,29 +969,33 @@ def send_whatsapp(payload: WhatsAppPayload):
         return {"status": "mock", "message": "Twilio credentials missing"}
 
     formatted_to = payload.to_number if payload.to_number.startswith("whatsapp:") else f"whatsapp:{payload.to_number}"
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
+    
+    data = {
+        "From": from_number,
+        "To": formatted_to
+    }
+    
+    if template_sid:
+        data["ContentSid"] = template_sid
+        data["ContentVariables"] = json.dumps({"1": payload.message})
+    else:
+        data["Body"] = payload.message
 
     try:
-        client = Client(account_sid, auth_token)
+        response = requests.post(url, data=data, auth=(account_sid, auth_token))
+        resp_json = response.json()
         
-        if template_sid:
-            message = client.messages.create(
-                from_=from_number,
-                to=formatted_to,
-                content_sid=template_sid,
-                content_variables=json.dumps({"1": payload.message})
-            )
+        if response.status_code in [200, 201]:
+            print(f"✅ WhatsApp alert dispatched! SID: {resp_json.get('sid')}")
+            return {"status": "success", "sid": resp_json.get('sid')}
         else:
-            message = client.messages.create(
-                from_=from_number,
-                to=formatted_to,
-                body=payload.message
-            )
-            
-        print(f"✅ WhatsApp alert dispatched! SID: {message.sid}")
-        return {"status": "success", "sid": message.sid}
+            error_msg = resp_json.get("message", "Unknown Twilio API Error")
+            print(f"❌ Twilio API Error: {error_msg}")
+            return {"status": "error", "detail": error_msg}
     except Exception as e:
         error_msg = str(e)
-        print(f"❌ Twilio API Error caught safely: {error_msg}")
+        print(f"❌ HTTP Request Error caught safely: {error_msg}")
         return {"status": "error", "detail": error_msg}
 
 @app.get("/api/data")
