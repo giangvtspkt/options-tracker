@@ -41,6 +41,7 @@ def norm_cdf(x):
 
 def calc_put_delta(S, K, T, r, sigma):
     if T <= 0 or S <= 0 or K <= 0: return 0.0
+    # Fallback ONLY for the internal math to prevent division by zero
     if not sigma or math.isnan(sigma) or sigma <= 0.001: sigma = 0.45
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
@@ -50,6 +51,7 @@ def calc_put_delta(S, K, T, r, sigma):
 
 def calc_call_delta(S, K, T, r, sigma):
     if T <= 0 or S <= 0 or K <= 0: return 0.0
+    # Fallback ONLY for the internal math to prevent division by zero
     if not sigma or math.isnan(sigma) or sigma <= 0.001: sigma = 0.45
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
@@ -65,6 +67,12 @@ def count_business_days(start_date, end_date):
             days += 1
         curr += datetime.timedelta(days=1)
     return max(days, 1)
+
+def calc_iv_percentile(current_iv, hist_vols):
+    if not hist_vols or len(hist_vols) == 0 or current_iv <= 0:
+        return None
+    count_below = sum(1 for v in hist_vols if v < current_iv)
+    return round((count_below / len(hist_vols)) * 100.0, 1)
 
 def get_safe_mid_price(row_data):
     try:
@@ -402,7 +410,7 @@ HTML_CONTENT = """<!DOCTYPE html>
   <div class="mb-4">
     <h2 class="text-xs font-bold text-sky-900 bg-sky-100 p-2.5 rounded-t-lg border-t border-x border-sky-200 flex items-center justify-between">
       <span>📉 Cash-Secured Puts (Green = Strike &lt; Support/Floor)</span>
-      <span id="putHighIvNotice" class="text-[10px] text-rose-800 font-bold hidden bg-rose-200/80 px-2 py-0.5 rounded animate-pulse">🔥 High IVP Put Alert</span>
+      <span id="putHighIvNotice" class="text-[10px] text-rose-800 font-bold hidden bg-rose-200/80 px-2 py-0.5 rounded animate-pulse">🔥 High Volatility Put Alert</span>
     </h2>
     <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
       <table class="w-full text-left" id="putsTable"><tbody id="putsBody"></tbody></table>
@@ -413,7 +421,7 @@ HTML_CONTENT = """<!DOCTYPE html>
   <div class="mb-6">
     <h2 class="text-xs font-bold text-amber-900 bg-amber-100 p-2.5 rounded-t-lg border-t border-x border-amber-200 flex items-center justify-between">
       <span>📈 Covered Calls (Green = Strike &gt; Resistance/Ceiling)</span>
-      <span id="callHighIvNotice" class="text-[10px] text-rose-800 font-bold hidden bg-rose-200/80 px-2 py-0.5 rounded animate-pulse">🔥 High IVP Call Alert</span>
+      <span id="callHighIvNotice" class="text-[10px] text-rose-800 font-bold hidden bg-rose-200/80 px-2 py-0.5 rounded animate-pulse">🔥 High Volatility Call Alert</span>
     </h2>
     <div class="overflow-x-auto bg-white border border-slate-200 rounded-b-lg shadow-sm">
       <table class="w-full text-left" id="callsTable"><tbody id="callsBody"></tbody></table>
@@ -1061,7 +1069,10 @@ def md_expirations(ticker):
                 tz = ZoneInfo("America/New_York")
                 exps.append(datetime.datetime.fromtimestamp(int(e), tz=tz).strftime("%Y-%m-%d"))
             except Exception:
-                pass
+                try:
+                    exps.append(datetime.datetime.fromtimestamp(int(e), tz=datetime.timezone.utc).strftime("%Y-%m-%d"))
+                except Exception:
+                    pass
                 
     if not exps:
         raise ValueError("No valid expirations parsed from marketdata.")
@@ -1088,17 +1099,25 @@ def _md_chain_df(data):
 def md_chain(ticker, expiration):
     """Return SimpleNamespace(calls=DataFrame, puts=DataFrame), like yf option_chain()."""
     base = {"expiration": expiration, "mode": MD_MODE}
-    data = md_request(f"/options/chain/{ticker}/", base)
     
-    df = _md_chain_df(data)
+    calls_df, puts_df = pd.DataFrame(), pd.DataFrame()
     
-    if df.empty or "side" not in df.columns:
-        return SimpleNamespace(calls=pd.DataFrame(), puts=pd.DataFrame())
+    try:
+        calls_data = md_request(f"/options/chain/{ticker}/", {**base, "side": "call"})
+        calls_df = _md_chain_df(calls_data)
+    except Exception:
+        pass
         
-    calls = df[df["side"] == "call"].reset_index(drop=True)
-    puts = df[df["side"] == "put"].reset_index(drop=True)
-    
-    return SimpleNamespace(calls=calls, puts=puts)
+    try:
+        puts_data = md_request(f"/options/chain/{ticker}/", {**base, "side": "put"})
+        puts_df = _md_chain_df(puts_data)
+    except Exception:
+        pass
+        
+    if calls_df.empty and puts_df.empty:
+        raise ValueError(f"No chain data returned by marketdata for {ticker} at {expiration}")
+        
+    return SimpleNamespace(calls=calls_df, puts=puts_df)
 
 def _native_delta(row, bs_delta):
     """Prefer the provider's native delta when present; else the Black-Scholes value."""
@@ -1191,13 +1210,6 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
         all_spots[ticker] = round(spot_price, 2)
         if not expirations and is_primary: continue
 
-        # Calculate the Ticker's Historical Volatility Percentile (HV Percentile)
-        ticker_hv_pctile = None
-        if len(hist_vols) > 0:
-            current_hv = hist_vols[-1]
-            count_below = sum(1 for v in hist_vols if v < current_hv)
-            ticker_hv_pctile = round((count_below / len(hist_vols)) * 100.0, 1)
-
         if df_hist is not None and not df_hist.empty and len(df_hist) >= 2:
             prev_high, prev_low, prev_close = float(df_hist['High'].iloc[-2]), float(df_hist['Low'].iloc[-2]), float(df_hist['Close'].iloc[-2])
             if math.isnan(prev_high) or math.isnan(prev_low) or math.isnan(prev_close):
@@ -1243,7 +1255,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                         loaded_chains[exp] = md_chain(ticker, exp)
                         continue
                     except Exception:
-                        pass
+                        pass  # explicitly fall through to Yahoo if MD chain is completely empty
                 loaded_chains[exp] = tkr.option_chain(exp)
             except Exception: continue
 
@@ -1271,12 +1283,17 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                     for _, row in chain.puts.iterrows():
                         try:
                             K = float(row['strike'])
+                            
+                            # Pull native IV safely without forcing fake display numbers
                             iv_raw = row.get('impliedVolatility')
                             try:
-                                iv_val = float(iv_raw)
-                                if math.isnan(iv_val) or iv_val <= 0.001: iv_val = 0.45
+                                if iv_raw is None:
+                                    iv_val = 0.0
+                                else:
+                                    iv_val = float(iv_raw)
+                                    if math.isnan(iv_val): iv_val = 0.0
                             except (ValueError, TypeError):
-                                iv_val = 0.45
+                                iv_val = 0.0
 
                             d = _native_delta(row, calc_put_delta(spot_price, K, T, r, sigma=iv_val))
                             if abs(d - (-delta)) < min_p_diff:
@@ -1292,7 +1309,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                             "raw_exp": exp, "exp": exp_stacked, "strike": round(k_val, 2),
                             "pct_diff": f"{((k_val - spot_price) / spot_price) * 100:+.1f}%",
                             "iv": round(iv_val * 100, 1), 
-                            "iv_pctile": ticker_hv_pctile,
+                            "iv_pctile": calc_iv_percentile(iv_val, hist_vols),
                             "prem": round(prem, 2), "ann": round(yield_pct * 252 / actual_b_days, 1),
                             "is_safe": k_val < market_data.get(ticker, {}).get("support", 0)
                         }
@@ -1302,12 +1319,17 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                     for _, row in chain.calls.iterrows():
                         try:
                             K = float(row['strike'])
+                            
+                            # Pull native IV safely without forcing fake display numbers
                             iv_raw = row.get('impliedVolatility')
                             try:
-                                iv_val = float(iv_raw)
-                                if math.isnan(iv_val) or iv_val <= 0.001: iv_val = 0.45
+                                if iv_raw is None:
+                                    iv_val = 0.0
+                                else:
+                                    iv_val = float(iv_raw)
+                                    if math.isnan(iv_val): iv_val = 0.0
                             except (ValueError, TypeError):
-                                iv_val = 0.45
+                                iv_val = 0.0
 
                             d = _native_delta(row, calc_call_delta(spot_price, K, T, r, sigma=iv_val))
                             if abs(d - delta) < min_c_diff:
@@ -1323,7 +1345,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                             "raw_exp": exp, "exp": exp_stacked, "strike": round(k_val, 2),
                             "pct_diff": f"{((k_val - spot_price) / spot_price) * 100:+.1f}%",
                             "iv": round(iv_val * 100, 1), 
-                            "iv_pctile": ticker_hv_pctile,
+                            "iv_pctile": calc_iv_percentile(iv_val, hist_vols),
                             "prem": round(prem, 2), "ann": round(yield_pct * 252 / actual_b_days, 1),
                             "is_safe": k_val > market_data.get(ticker, {}).get("resistance", 0)
                         }
