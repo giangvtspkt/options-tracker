@@ -41,7 +41,6 @@ def norm_cdf(x):
 
 def calc_put_delta(S, K, T, r, sigma):
     if T <= 0 or S <= 0 or K <= 0: return 0.0
-    # Fallback ONLY for the internal math to prevent division by zero
     if not sigma or math.isnan(sigma) or sigma <= 0.001: sigma = 0.45
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
@@ -51,7 +50,6 @@ def calc_put_delta(S, K, T, r, sigma):
 
 def calc_call_delta(S, K, T, r, sigma):
     if T <= 0 or S <= 0 or K <= 0: return 0.0
-    # Fallback ONLY for the internal math to prevent division by zero
     if not sigma or math.isnan(sigma) or sigma <= 0.001: sigma = 0.45
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
@@ -334,7 +332,11 @@ HTML_CONTENT = """<!DOCTYPE html>
           <tr>
             <th class="p-1.5 border-r">Broker</th>
             <th class="p-1.5 border-r">Pos</th>
-            <th class="p-1.5 border-r">Contract</th>
+            <th class="p-1.5 border-r p-0">
+               <select id="posTickerFilter" onchange="renderPositionsAndPL()" class="w-full bg-transparent font-bold text-slate-600 outline-none cursor-pointer px-1 py-1">
+                 <option value="ALL">Contract (All)</option>
+               </select>
+            </th>
             <th class="p-1.5 border-r">Trade Day</th>
             <th class="p-1.5 border-r">Exp</th>
             <th class="p-1.5 border-r">Entry</th>
@@ -547,6 +549,17 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     function renderPositionsAndPL() {
       document.getElementById('hideExpiredToggle').checked = hideExpired;
+      
+      // Setup Ticker Filter Dropdown
+      const filterSelect = document.getElementById('posTickerFilter');
+      const currentFilter = filterSelect ? filterSelect.value : 'ALL';
+      const uniqueTickers = Array.from(new Set(cloudPositions.map(p => p.ticker))).sort();
+      if (filterSelect) {
+        filterSelect.innerHTML = `<option value="ALL">Contract (All)</option>` + uniqueTickers.map(t => `<option value="${t}">${t}</option>`).join('');
+        filterSelect.value = uniqueTickers.includes(currentFilter) ? currentFilter : 'ALL';
+      }
+      const activeFilter = filterSelect ? filterSelect.value : 'ALL';
+      
       const tbody = document.getElementById('positionsBody');
       const now = new Date();
       const currentYear = now.getFullYear();
@@ -633,8 +646,14 @@ HTML_CONTENT = """<!DOCTYPE html>
         });
       }
 
-      const visiblePositions = cloudPositions.filter(p => !hideExpired || p.exp >= todayStr).sort((a, b) => new Date(a.exp) - new Date(b.exp) || a.ticker.localeCompare(b.ticker));
-      if (visiblePositions.length === 0) tbody.innerHTML = `<tr><td colspan="11" class="p-2 text-center text-slate-400">No active positions saved.</td></tr>`;
+      // Apply Filter before rendering
+      let visiblePositions = cloudPositions.filter(p => !hideExpired || p.exp >= todayStr);
+      if (activeFilter !== 'ALL') {
+        visiblePositions = visiblePositions.filter(p => p.ticker === activeFilter);
+      }
+      visiblePositions.sort((a, b) => new Date(a.exp) - new Date(b.exp) || a.ticker.localeCompare(b.ticker));
+      
+      if (visiblePositions.length === 0) tbody.innerHTML = `<tr><td colspan="11" class="p-2 text-center text-slate-400">No active positions found.</td></tr>`;
       else tbody.innerHTML = '';
 
       const posColorMap = {};
@@ -713,7 +732,11 @@ HTML_CONTENT = """<!DOCTYPE html>
           let pctSpan = '';
           if (maxPl !== 0) {
             const pctOfMax = (currentPl / Math.abs(maxPl)) * 100;
-            pctSpan = `<span class="block text-[9px] font-medium ${pctOfMax >= 0 ? 'text-emerald-600' : 'text-rose-600'}">(${pctOfMax >= 0 ? '+' : ''}${pctOfMax.toFixed(1)}% max)</span>`;
+            let pctColor = 'text-rose-700';
+            if (pctOfMax > 50) pctColor = 'text-emerald-700';
+            else if (pctOfMax >= 0) pctColor = 'text-amber-600';
+            
+            pctSpan = `<span class="block text-[9px] font-bold ${pctColor}">(${pctOfMax >= 0 ? '+' : ''}${pctOfMax.toFixed(1)}% max)</span>`;
           }
           curPlDisplay = `<div>${currentPl >= 0 ? '+$' : '-$'}${Math.abs(currentPl).toFixed(2)}${pctSpan}</div>`;
         }
@@ -724,8 +747,19 @@ HTML_CONTENT = """<!DOCTYPE html>
           let spotSubtext = '';
           if (spot !== null && p.strike > 0) {
             const diffPct = ((spot - p.strike) / p.strike) * 100;
-            const isSafe = (p.type === 'PUT') ? (spot >= p.strike) : (spot <= p.strike);
-            spotSubtext = `<span class="block text-[8.5px] font-mono leading-tight ${isSafe ? 'text-emerald-600' : 'text-rose-600 font-bold'}">$${spot.toFixed(2)} (${diffPct > 0 ? '+' : ''}${diffPct.toFixed(1)}%)</span>`;
+            let spotColor = '';
+            
+            if (p.type === 'PUT') {
+                if (diffPct > 7) spotColor = 'text-emerald-700 font-bold';
+                else if (diffPct >= 1) spotColor = 'text-amber-600 font-bold';
+                else spotColor = 'text-rose-700 font-extrabold';
+            } else {
+                if (diffPct < -7) spotColor = 'text-emerald-700 font-bold';
+                else if (diffPct <= -1) spotColor = 'text-amber-600 font-bold';
+                else spotColor = 'text-rose-700 font-extrabold';
+            }
+            
+            spotSubtext = `<span class="block text-[8.5px] font-mono leading-tight ${spotColor}">$${spot.toFixed(2)} (${diffPct > 0 ? '+' : ''}${diffPct.toFixed(1)}%)</span>`;
           }
           markDisplay = `<div><span class="font-mono font-medium text-slate-800">$${liveMark.toFixed(2)}</span>${spotSubtext}</div>`;
         }
@@ -1204,9 +1238,6 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
         all_spots[ticker] = round(spot_price, 2)
         if not expirations and is_primary: continue
 
-        # --- CORRECT PERCENTILE CALCULATION ---
-        # Instead of ranking the option's IV against historical Volatility,
-        # rank the Stock's CURRENT Realized Volatility against its 1-year history.
         ticker_hv_pctile = None
         if len(hist_vols) > 0:
             current_hv = hist_vols[-1]
@@ -1287,7 +1318,6 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                         try:
                             K = float(row['strike'])
                             
-                            # Pull native IV safely without forcing fake display numbers
                             iv_raw = row.get('impliedVolatility')
                             try:
                                 if iv_raw is None:
@@ -1298,7 +1328,6 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                             except (ValueError, TypeError):
                                 iv_val = 0.0
 
-                            # calculate delta safely 
                             d = _native_delta(row, calc_put_delta(spot_price, K, T, r, sigma=iv_val))
                             if abs(d - (-delta)) < min_p_diff:
                                 min_p_diff = abs(d - (-delta)); best_put = (row, K, iv_val)
@@ -1324,7 +1353,6 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                         try:
                             K = float(row['strike'])
                             
-                            # Pull native IV safely without forcing fake display numbers
                             iv_raw = row.get('impliedVolatility')
                             try:
                                 if iv_raw is None:
