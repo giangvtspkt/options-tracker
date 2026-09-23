@@ -24,21 +24,12 @@ GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "positions.json")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "+17372508034")
-# WhatsApp sender MUST be a WhatsApp-enabled sender on the same Twilio account,
-# e.g. TWILIO_WHATSAPP_FROM=whatsapp:+14155238886 (sandbox) or your registered
-# WhatsApp sender. Never reuse the SMS number for WhatsApp.
 TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "")
 TWILIO_SMS_FROM = os.getenv("TWILIO_SMS_FROM", TWILIO_FROM_NUMBER)
 
 # --- Market Data Provider (marketdata.app) Config ---
-# Trader plan = real-time options via hosted REST API (no daemon needed on Render).
-# Set MARKETDATA_API_TOKEN in Render env vars to enable. Without it, the app uses
-# yfinance. If a marketdata.app call fails for a ticker, that ticker falls back
-# to yfinance automatically and the fallback is reported in diagnostics.
 MARKETDATA_API_TOKEN = os.getenv("MARKETDATA_API_TOKEN", "")
 MD_BASE = "https://api.marketdata.app/v1"
-# MD_MODE: "cached" = 1 credit per chain request (slight delay, cheap);
-#          "live"   = real-time quotes, billed per contract returned (expensive).
 MD_MODE = os.getenv("MD_MODE", "cached")
 MD_STRIKE_LIMIT = int(os.getenv("MD_STRIKE_LIMIT", "12"))
 MD_TIMEOUT = int(os.getenv("MD_TIMEOUT", "15"))
@@ -1107,17 +1098,30 @@ def _md_chain_df(data):
 
 def md_chain(ticker, expiration):
     """Return SimpleNamespace(calls=DataFrame, puts=DataFrame), like yf option_chain()."""
+    # By omitting 'side', marketdata.app returns both calls and puts in a single request!
     base = {"expiration": expiration, "strikeLimit": MD_STRIKE_LIMIT, "mode": MD_MODE}
-    calls = _md_chain_df(md_request(f"/options/chain/{ticker}/", {**base, "side": "call"}))
-    puts = _md_chain_df(md_request(f"/options/chain/{ticker}/", {**base, "side": "put"}))
+    data = md_request(f"/options/chain/{ticker}/", base)
+    
+    df = _md_chain_df(data)
+    
+    # Safely handle empty chains
+    if df.empty or "side" not in df.columns:
+        return SimpleNamespace(calls=pd.DataFrame(), puts=pd.DataFrame())
+        
+    # Split the single payload into calls and puts
+    calls = df[df["side"] == "call"].reset_index(drop=True)
+    puts = df[df["side"] == "put"].reset_index(drop=True)
+    
     return SimpleNamespace(calls=calls, puts=puts)
 
 def _native_delta(row, bs_delta):
     """Prefer the provider's native delta when present; else the Black-Scholes value."""
     try:
-        d = row.get("delta", None)
-        if d is not None and not (isinstance(d, float) and math.isnan(d)):
-            return float(d)
+        d = row.get("delta")
+        if d is not None:
+            d_float = float(d)
+            if not math.isnan(d_float):
+                return d_float
     except Exception:
         pass
     return bs_delta
