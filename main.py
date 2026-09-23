@@ -68,12 +68,6 @@ def count_business_days(start_date, end_date):
         curr += datetime.timedelta(days=1)
     return max(days, 1)
 
-def calc_iv_percentile(current_iv, hist_vols):
-    if not hist_vols or len(hist_vols) == 0 or current_iv <= 0:
-        return None
-    count_below = sum(1 for v in hist_vols if v < current_iv)
-    return round((count_below / len(hist_vols)) * 100.0, 1)
-
 def get_safe_mid_price(row_data):
     try:
         ask_raw = row_data.get("ask", 0)
@@ -220,11 +214,11 @@ HTML_CONTENT = """<!DOCTYPE html>
           <input id="critCallWarnPct" type="number" step="0.5" class="w-full border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
         </div>
         <div class="bg-amber-50/70 p-1.5 rounded border border-amber-200">
-          <label class="font-bold text-amber-900 block mb-0.5">🔥 Put High IV (%ile)</label>
+          <label class="font-bold text-amber-900 block mb-0.5">🔥 Put High Vol (%ile)</label>
           <input id="critPutHighIvPctile" type="number" step="5" class="w-full border rounded p-1 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
         </div>
         <div class="bg-amber-50/70 p-1.5 rounded border border-amber-200">
-          <label class="font-bold text-amber-900 block mb-0.5">🔥 Call High IV (%ile)</label>
+          <label class="font-bold text-amber-900 block mb-0.5">🔥 Call High Vol (%ile)</label>
           <input id="critCallHighIvPctile" type="number" step="5" class="w-full border rounded p-1 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
         </div>
         <!-- Alert Recipient Settings -->
@@ -1210,6 +1204,15 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
         all_spots[ticker] = round(spot_price, 2)
         if not expirations and is_primary: continue
 
+        # --- CORRECT PERCENTILE CALCULATION ---
+        # Instead of ranking the option's IV against historical Volatility,
+        # rank the Stock's CURRENT Realized Volatility against its 1-year history.
+        ticker_hv_pctile = None
+        if len(hist_vols) > 0:
+            current_hv = hist_vols[-1]
+            count_below = sum(1 for v in hist_vols if v < current_hv)
+            ticker_hv_pctile = round((count_below / len(hist_vols)) * 100.0, 1)
+
         if df_hist is not None and not df_hist.empty and len(df_hist) >= 2:
             prev_high, prev_low, prev_close = float(df_hist['High'].iloc[-2]), float(df_hist['Low'].iloc[-2]), float(df_hist['Close'].iloc[-2])
             if math.isnan(prev_high) or math.isnan(prev_low) or math.isnan(prev_close):
@@ -1295,6 +1298,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                             except (ValueError, TypeError):
                                 iv_val = 0.0
 
+                            # calculate delta safely 
                             d = _native_delta(row, calc_put_delta(spot_price, K, T, r, sigma=iv_val))
                             if abs(d - (-delta)) < min_p_diff:
                                 min_p_diff = abs(d - (-delta)); best_put = (row, K, iv_val)
@@ -1309,7 +1313,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                             "raw_exp": exp, "exp": exp_stacked, "strike": round(k_val, 2),
                             "pct_diff": f"{((k_val - spot_price) / spot_price) * 100:+.1f}%",
                             "iv": round(iv_val * 100, 1), 
-                            "iv_pctile": calc_iv_percentile(iv_val, hist_vols),
+                            "iv_pctile": ticker_hv_pctile,
                             "prem": round(prem, 2), "ann": round(yield_pct * 252 / actual_b_days, 1),
                             "is_safe": k_val < market_data.get(ticker, {}).get("support", 0)
                         }
@@ -1345,7 +1349,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                             "raw_exp": exp, "exp": exp_stacked, "strike": round(k_val, 2),
                             "pct_diff": f"{((k_val - spot_price) / spot_price) * 100:+.1f}%",
                             "iv": round(iv_val * 100, 1), 
-                            "iv_pctile": calc_iv_percentile(iv_val, hist_vols),
+                            "iv_pctile": ticker_hv_pctile,
                             "prem": round(prem, 2), "ann": round(yield_pct * 252 / actual_b_days, 1),
                             "is_safe": k_val > market_data.get(ticker, {}).get("resistance", 0)
                         }
