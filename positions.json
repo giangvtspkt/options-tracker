@@ -246,5 +246,17 @@
     "exp": "2026-10-23",
     "trade_date": "2026-09-22",
     "broker": "ibkr"
+  },
+  {
+    "id": 1790133552457,
+    "action": "SELL",
+    "type": "PUT",
+    "ticker": "SOFI",
+    "strike": 16.0,
+    "prem": 0.4,
+    "qty": 5,
+    "exp": "2026-10-23",
+    "trade_date": "2026-09-22",
+    "broker": "moomoo"
   }
 ]
