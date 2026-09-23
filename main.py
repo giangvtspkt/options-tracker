@@ -2,6 +2,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import yfinance as yf
+import pandas as pd
+from types import SimpleNamespace
 import numpy as np
 import math
 import datetime
@@ -27,6 +29,20 @@ TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "+17372508034")
 # WhatsApp sender. Never reuse the SMS number for WhatsApp.
 TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "")
 TWILIO_SMS_FROM = os.getenv("TWILIO_SMS_FROM", TWILIO_FROM_NUMBER)
+
+# --- Market Data Provider (marketdata.app) Config ---
+# Trader plan = real-time options via hosted REST API (no daemon needed on Render).
+# Set MARKETDATA_API_TOKEN in Render env vars to enable. Without it, the app uses
+# yfinance. If a marketdata.app call fails for a ticker, that ticker falls back
+# to yfinance automatically and the fallback is reported in diagnostics.
+MARKETDATA_API_TOKEN = os.getenv("MARKETDATA_API_TOKEN", "")
+MD_BASE = "https://api.marketdata.app/v1"
+# MD_MODE: "cached" = 1 credit per chain request (slight delay, cheap);
+#          "live"   = real-time quotes, billed per contract returned (expensive).
+MD_MODE = os.getenv("MD_MODE", "cached")
+MD_STRIKE_LIMIT = int(os.getenv("MD_STRIKE_LIMIT", "12"))
+MD_TIMEOUT = int(os.getenv("MD_TIMEOUT", "15"))
+CHAIN_PROVIDER = "marketdata" if MARKETDATA_API_TOKEN else "yfinance"
 
 CACHE_FILE_PATH = os.path.join(tempfile.gettempdir(), "options_cache_data.json")
 
@@ -366,7 +382,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       <span id="btnSpinner" class="hidden animate-spin h-3.5 w-3.5 border-2 border-white border-t-transparent rounded-full"></span>
       <span id="btnText">Refresh Data</span>
     </button>
-    <div id="status" class="text-[11px] text-slate-500 mt-1.5 text-right font-medium">Ready</div>
+    <div id="status" class="text-[11px] text-slate-500 mt-1.5 text-right font-medium">Ready <span id="providerBadge" class="ml-1 px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 font-bold"></span></div>
   </div>
 
   <!-- 3. Key Technical Levels -->
@@ -761,6 +777,8 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     function applyDataPayload(data) {
       globalData = data;
+      const pb = document.getElementById('providerBadge');
+      if (pb) pb.innerText = data.provider === 'marketdata' ? 'marketdata.app' : 'yfinance';
       renderLevelsTable(globalData.market);
       renderPills(globalData.tickers);
       renderBothTables();
@@ -1040,6 +1058,70 @@ def send_alert(payload: AlertPayload):
         print(f"❌ Request Error: {error_msg}")
         return {"status": "error", "detail": error_msg}
 
+# --- marketdata.app provider (Trader plan: real-time options, hosted REST) ---
+def md_request(path, params=None):
+    """GET a marketdata.app endpoint. Returns decoded JSON; raises on any error."""
+    url = f"{MD_BASE}{path}"
+    headers = {"Authorization": f"Bearer {MARKETDATA_API_TOKEN}"}
+    r = requests.get(url, headers=headers, params=params or {}, timeout=MD_TIMEOUT)
+    r.raise_for_status()
+    data = r.json()
+    if data.get("s") != "ok":
+        raise RuntimeError(f"marketdata.app status={data.get('s')}")
+    return data
+
+def _md_expiration_to_str(e):
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/New_York")
+    except Exception:
+        tz = datetime.timezone.utc
+    return datetime.datetime.fromtimestamp(int(e), tz=tz).strftime("%Y-%m-%d")
+
+def md_expirations(ticker):
+    """Return ['YYYY-MM-DD', ...] expirations for ticker (yfinance-compatible)."""
+    data = md_request(f"/options/expirations/{ticker}/")
+    exps = []
+    for e in data.get("expirations", []) or []:
+        try: exps.append(_md_expiration_to_str(e))
+        except Exception: continue
+    return exps
+
+def md_spot(ticker):
+    """Return last spot price for ticker, or 0.0."""
+    data = md_request(f"/stocks/quotes/{ticker}/")
+    last = (data.get("last") or [0])[0]
+    try: return float(last)
+    except Exception: return 0.0
+
+def _md_chain_df(data):
+    """Convert marketdata.app columnar chain JSON into a yfinance-shaped DataFrame."""
+    cols = {k: v for k, v in data.items() if isinstance(v, list)}
+    df = pd.DataFrame(cols)
+    if df.empty: return df
+    if "iv" in df.columns and "impliedVolatility" not in df.columns:
+        df["impliedVolatility"] = df["iv"]          # API uses 'iv', yfinance uses 'impliedVolatility'
+    if "last" in df.columns and "lastPrice" not in df.columns:
+        df["lastPrice"] = df["last"]                # get_safe_mid_price() reads 'lastPrice'
+    return df
+
+def md_chain(ticker, expiration):
+    """Return SimpleNamespace(calls=DataFrame, puts=DataFrame), like yf option_chain()."""
+    base = {"expiration": expiration, "strikeLimit": MD_STRIKE_LIMIT, "mode": MD_MODE}
+    calls = _md_chain_df(md_request(f"/options/chain/{ticker}/", {**base, "side": "call"}))
+    puts = _md_chain_df(md_request(f"/options/chain/{ticker}/", {**base, "side": "put"}))
+    return SimpleNamespace(calls=calls, puts=puts)
+
+def _native_delta(row, bs_delta):
+    """Prefer the provider's native delta when present; else the Black-Scholes value."""
+    try:
+        d = row.get("delta", None)
+        if d is not None and not (isinstance(d, float) and math.isnan(d)):
+            return float(d)
+    except Exception:
+        pass
+    return bs_delta
+
 @app.get("/api/data")
 def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", delta: float = 0.2):
     positions, _ = get_positions_from_github()
@@ -1072,18 +1154,29 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
         df_hist = None
         hist_vols = []
 
-        try:
-            tkr = yf.Ticker(ticker)
+        tkr = yf.Ticker(ticker)
+        use_md = (CHAIN_PROVIDER == "marketdata")
+        if use_md:
             try:
-                if hasattr(tkr, 'fast_info'):
-                    spot_price = float(tkr.fast_info.get('last_price') or tkr.fast_info.get('lastPrice') or 0.0)
-            except Exception: pass
+                spot_price = md_spot(ticker)
+                expirations = md_expirations(ticker)
+            except Exception as e:
+                use_md = False
+                if is_primary:
+                    diagnostics[ticker] = f"marketdata.app failed, fell back to Yahoo: {str(e)[:120]}"
 
-            if not spot_price or spot_price <= 0:
-                hist_1d = tkr.history(period="5d")
-                if not hist_1d.empty: spot_price = float(hist_1d['Close'].iloc[-1])
+        try:
+            if not use_md:
+                try:
+                    if hasattr(tkr, 'fast_info'):
+                        spot_price = float(tkr.fast_info.get('last_price') or tkr.fast_info.get('lastPrice') or 0.0)
+                except Exception: pass
 
-            expirations = list(tkr.options) if tkr.options else []
+                if not spot_price or spot_price <= 0:
+                    hist_1d = tkr.history(period="5d")
+                    if not hist_1d.empty: spot_price = float(hist_1d['Close'].iloc[-1])
+
+                expirations = list(tkr.options) if tkr.options else []
             
             df_hist_1y = tkr.history(period="1y")
             if df_hist_1y is not None and len(df_hist_1y) >= 30:
@@ -1099,7 +1192,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
 
             if spot_price > 0: successful_fetches += 1
         except Exception as e:
-            if is_primary: diagnostics[ticker] = f"Error reaching Yahoo Finance: {str(e)}"
+            if is_primary: diagnostics[ticker] = f"Error reaching market data ({'marketdata.app' if use_md else 'Yahoo Finance'}): {str(e)[:120]}"
 
         if not spot_price or spot_price <= 0:
             if is_primary and ticker not in all_spots: diagnostics[ticker] = "No spot price available"
@@ -1147,7 +1240,14 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
 
         loaded_chains = {}
         for exp in needed_exps:
-            try: loaded_chains[exp] = tkr.option_chain(exp)
+            try:
+                if use_md:
+                    try:
+                        loaded_chains[exp] = md_chain(ticker, exp)
+                        continue
+                    except Exception:
+                        pass  # fall through to yfinance for this expiration
+                loaded_chains[exp] = tkr.option_chain(exp)
             except Exception: continue
 
         for p in positions:
@@ -1176,7 +1276,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                             K = float(row['strike'])
                             iv_raw = row.get('impliedVolatility', 0.45)
                             iv_val = 0.45 if iv_raw is None or math.isnan(float(iv_raw)) else float(iv_raw)
-                            d = calc_put_delta(spot_price, K, T, r, sigma=iv_val)
+                            d = _native_delta(row, calc_put_delta(spot_price, K, T, r, sigma=iv_val))
                             if abs(d - (-delta)) < min_p_diff:
                                 min_p_diff = abs(d - (-delta)); best_put = (row, K, iv_val)
                         except Exception: continue
@@ -1201,7 +1301,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                             K = float(row['strike'])
                             iv_raw = row.get('impliedVolatility', 0.45)
                             iv_val = 0.45 if iv_raw is None or math.isnan(float(iv_raw)) else float(iv_raw)
-                            d = calc_call_delta(spot_price, K, T, r, sigma=iv_val)
+                            d = _native_delta(row, calc_call_delta(spot_price, K, T, r, sigma=iv_val))
                             if abs(d - delta) < min_c_diff:
                                 min_c_diff = abs(d - delta); best_call = (row, K, iv_val)
                         except Exception: continue
@@ -1224,7 +1324,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
         "market": {t: market_data[t] for t in primary_tickers if t in market_data},
         "all_spots": all_spots, "puts": results_puts, "calls": results_calls,
         "tickers": primary_tickers, "targets": target_periods, "live_positions": live_positions,
-        "diagnostics": diagnostics, "is_cached": is_cached_payload,
+        "diagnostics": diagnostics, "is_cached": is_cached_payload, "provider": CHAIN_PROVIDER,
         "cached_at": cache_store.get("cached_at") if is_cached_payload else datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     if successful_fetches > 0: save_cached_data(payload)
