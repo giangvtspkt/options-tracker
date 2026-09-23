@@ -31,7 +31,6 @@ TWILIO_SMS_FROM = os.getenv("TWILIO_SMS_FROM", TWILIO_FROM_NUMBER)
 MARKETDATA_API_TOKEN = os.getenv("MARKETDATA_API_TOKEN", "")
 MD_BASE = "https://api.marketdata.app/v1"
 MD_MODE = os.getenv("MD_MODE", "cached")
-MD_STRIKE_LIMIT = int(os.getenv("MD_STRIKE_LIMIT", "12"))
 MD_TIMEOUT = int(os.getenv("MD_TIMEOUT", "15"))
 CHAIN_PROVIDER = "marketdata" if MARKETDATA_API_TOKEN else "yfinance"
 
@@ -998,9 +997,6 @@ def send_alert(payload: AlertPayload):
     is_whatsapp = to_num.lower().startswith("whatsapp:")
 
     if is_whatsapp:
-        # WhatsApp MUST use a WhatsApp-enabled sender owned by the same Twilio
-        # account, e.g. TWILIO_WHATSAPP_FROM=whatsapp:+14155238886 (sandbox)
-        # or your registered WhatsApp sender. Never derive it from the SMS number.
         wa_from = os.environ.get("TWILIO_WHATSAPP_FROM", "").strip()
         if not wa_from:
             err = "TWILIO_WHATSAPP_FROM is not set. Set it to your WhatsApp sender, e.g. whatsapp:+14155238886."
@@ -1061,21 +1057,24 @@ def md_request(path, params=None):
         raise RuntimeError(f"marketdata.app status={data.get('s')}")
     return data
 
-def _md_expiration_to_str(e):
-    try:
-        from zoneinfo import ZoneInfo
-        tz = ZoneInfo("America/New_York")
-    except Exception:
-        tz = datetime.timezone.utc
-    return datetime.datetime.fromtimestamp(int(e), tz=tz).strftime("%Y-%m-%d")
-
 def md_expirations(ticker):
-    """Return ['YYYY-MM-DD', ...] expirations for ticker (yfinance-compatible)."""
+    """Return ['YYYY-MM-DD', ...] expirations for ticker."""
     data = md_request(f"/options/expirations/{ticker}/")
     exps = []
     for e in data.get("expirations", []) or []:
-        try: exps.append(_md_expiration_to_str(e))
-        except Exception: continue
+        # If it's already a date string (YYYY-MM-DD), append directly
+        if isinstance(e, str) and "-" in e:
+            exps.append(e.strip())
+        else:
+            try:
+                from zoneinfo import ZoneInfo
+                tz = ZoneInfo("America/New_York")
+                exps.append(datetime.datetime.fromtimestamp(int(e), tz=tz).strftime("%Y-%m-%d"))
+            except Exception:
+                pass
+                
+    if not exps:
+        raise ValueError("No valid expirations parsed from marketdata.")
     return exps
 
 def md_spot(ticker):
@@ -1098,17 +1097,15 @@ def _md_chain_df(data):
 
 def md_chain(ticker, expiration):
     """Return SimpleNamespace(calls=DataFrame, puts=DataFrame), like yf option_chain()."""
-    # By omitting 'side', marketdata.app returns both calls and puts in a single request!
-    base = {"expiration": expiration, "strikeLimit": MD_STRIKE_LIMIT, "mode": MD_MODE}
+    # By omitting 'side' and 'strikeLimit', we pull the entire option chain efficiently
+    base = {"expiration": expiration, "mode": MD_MODE}
     data = md_request(f"/options/chain/{ticker}/", base)
     
     df = _md_chain_df(data)
     
-    # Safely handle empty chains
     if df.empty or "side" not in df.columns:
         return SimpleNamespace(calls=pd.DataFrame(), puts=pd.DataFrame())
         
-    # Split the single payload into calls and puts
     calls = df[df["side"] == "call"].reset_index(drop=True)
     puts = df[df["side"] == "put"].reset_index(drop=True)
     
