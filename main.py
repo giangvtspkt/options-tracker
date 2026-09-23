@@ -32,7 +32,7 @@ MARKETDATA_API_TOKEN = os.getenv("MARKETDATA_API_TOKEN", "")
 MD_BASE = "https://api.marketdata.app/v1"
 MD_MODE = os.getenv("MD_MODE", "cached")
 MD_TIMEOUT = int(os.getenv("MD_TIMEOUT", "15"))
-CHAIN_PROVIDER = "marketdata" if MARKETDATA_API_TOKEN else "yfinance"
+CHAIN_PROVIDER = os.getenv("CHAIN_PROVIDER", "marketdata")
 
 CACHE_FILE_PATH = os.path.join(tempfile.gettempdir(), "options_cache_data.json")
 
@@ -1076,7 +1076,9 @@ def send_alert(payload: AlertPayload):
 def md_request(path, params=None):
     """GET a marketdata.app endpoint. Returns decoded JSON; raises on any error."""
     url = f"{MD_BASE}{path}"
-    headers = {"Authorization": f"Bearer {MARKETDATA_API_TOKEN}"}
+    headers = {}
+    if MARKETDATA_API_TOKEN:
+        headers["Authorization"] = f"Bearer {MARKETDATA_API_TOKEN}"
     r = requests.get(url, headers=headers, params=params or {}, timeout=MD_TIMEOUT)
     r.raise_for_status()
     data = r.json()
@@ -1205,13 +1207,10 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
         try:
             if not use_md:
                 try:
-                    if hasattr(tkr, 'fast_info'):
-                        spot_price = float(tkr.fast_info.get('last_price') or tkr.fast_info.get('lastPrice') or 0.0)
-                except Exception: pass
-
-                if not spot_price or spot_price <= 0:
                     hist_1d = tkr.history(period="5d")
                     if not hist_1d.empty: spot_price = float(hist_1d['Close'].iloc[-1])
+                except Exception:
+                    pass
 
                 expirations = list(tkr.options) if tkr.options else []
             
