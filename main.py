@@ -1139,7 +1139,6 @@ def md_chain(ticker, expiration):
     """Return SimpleNamespace(calls=DataFrame, puts=DataFrame), like yf option_chain()."""
     base = {"expiration": expiration, "mode": MD_MODE}
     
-    # Send a single request; marketdata returns both calls & puts if side is omitted
     try:
         data = md_request(f"/options/chain/{ticker}/", base)
         df = _md_chain_df(data)
@@ -1194,6 +1193,12 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
     diagnostics = {}
     
     successful_fetches = 0
+    
+    # Initialize a custom session to spoof a web browser and prevent Yahoo Finance IP Blocks
+    yf_session = requests.Session()
+    yf_session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    })
 
     for ticker in combined_ticker_list:
         is_primary = ticker in primary_tickers
@@ -1202,7 +1207,11 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
         df_hist = None
         hist_vols = []
 
-        tkr = yf.Ticker(ticker)
+        try:
+            tkr = yf.Ticker(ticker, session=yf_session)
+        except TypeError:
+            tkr = yf.Ticker(ticker)
+
         use_md = (CHAIN_PROVIDER == "marketdata")
         
         # --- ISOLATED SPOT FETCH ---
@@ -1212,7 +1221,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
             except Exception as e:
                 use_md = False
                 if is_primary:
-                    diagnostics[ticker] = f"marketdata.app failed, fell back to Yahoo: {str(e)[:120]}"
+                    diagnostics[ticker] = f"MarketData API Spot Check Failed: {str(e)[:100]}"
 
         if spot_price is None or math.isnan(spot_price) or spot_price <= 0:
             try:
@@ -1232,14 +1241,17 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
         if use_md:
             try:
                 expirations = md_expirations(ticker)
-            except Exception:
+            except Exception as e:
                 use_md = False
+                if is_primary: diagnostics[ticker] = f"MarketData Expirations Failed: {str(e)[:100]}"
                 
         if not expirations:
             try:
                 expirations = list(tkr.options) if tkr.options else []
+                if not expirations and is_primary:
+                    diagnostics[ticker] = "Yahoo Finance returned 0 expirations. You may be IP Blocked. Please add a MarketData API Token."
             except Exception as e:
-                if is_primary: diagnostics[ticker] = f"Yahoo options failed: {str(e)[:120]}"
+                if is_primary: diagnostics[ticker] = f"Yahoo Finance Options Blocked: {str(e)[:100]}"
 
         # --- ISOLATED HISTORICAL VOLATILITY FETCH ---
         try:
@@ -1260,7 +1272,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
         if spot_price is not None and not math.isnan(spot_price) and spot_price > 0: 
             successful_fetches += 1
         else:
-            if is_primary and ticker not in all_spots: diagnostics[ticker] = "No spot price available"
+            if is_primary and ticker not in all_spots: diagnostics[ticker] = "No spot price available from any provider."
             continue
 
         all_spots[ticker] = round(spot_price, 2)
@@ -1318,11 +1330,19 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                 if use_md:
                     try:
                         loaded_chains[exp] = md_chain(ticker, exp)
+                        if is_primary and ticker in diagnostics:
+                            del diagnostics[ticker] # Cleared because MarketData succeeded
                         continue
-                    except Exception:
-                        pass  # explicitly fall through to Yahoo if MD chain is completely empty
+                    except Exception as e:
+                        if is_primary: diagnostics[ticker] = f"MarketData API blocked/failed. Add API Token."
+                
+                # Deliberate Fallback to Yahoo
                 loaded_chains[exp] = tkr.option_chain(exp)
-            except Exception: continue
+                if is_primary and ticker in diagnostics:
+                    del diagnostics[ticker] # Cleared because Yahoo succeeded
+            except Exception as e: 
+                if is_primary: diagnostics[ticker] = "Both MarketData and Yahoo Finance failed to fetch options. Please add a free MarketData API token."
+                continue
 
         for p in positions:
             try:
