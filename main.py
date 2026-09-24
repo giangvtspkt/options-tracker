@@ -550,7 +550,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     function renderPositionsAndPL() {
       document.getElementById('hideExpiredToggle').checked = hideExpired;
       
-      // Setup Ticker Filter Dropdown
       const filterSelect = document.getElementById('posTickerFilter');
       const currentFilter = filterSelect ? filterSelect.value : 'ALL';
       const uniqueTickers = Array.from(new Set(cloudPositions.map(p => p.ticker))).sort();
@@ -585,10 +584,15 @@ HTML_CONTENT = """<!DOCTYPE html>
         if (isExpired) {
           let closedPl = 0;
           if (p.action === 'SELL') {
-            if (spot !== null) {
-              const isWin = (p.type === 'PUT' && spot >= p.strike) || (p.type === 'CALL' && spot <= p.strike);
-              closedPl = isWin ? p.prem * 100 * p.qty : (p.prem - (p.type === 'PUT' ? Math.max(p.strike - spot, 0) : Math.max(spot - p.strike, 0))) * 100 * p.qty;
-            } else closedPl = p.prem * 100 * p.qty;
+            if (p.type === 'CALL') {
+              // Covered Calls always achieve max profit at assignment since strike > purchase cost
+              closedPl = p.prem * 100 * p.qty;
+            } else {
+              if (spot !== null) {
+                const isWin = spot >= p.strike;
+                closedPl = isWin ? p.prem * 100 * p.qty : (p.prem - Math.max(p.strike - spot, 0)) * 100 * p.qty;
+              } else closedPl = p.prem * 100 * p.qty;
+            }
           } else {
             closedPl = ((p.type === 'CALL' ? Math.max((spot || 0) - p.strike, 0) : Math.max(p.strike - (spot || 0), 0)) - p.prem) * 100 * p.qty;
           }
@@ -646,7 +650,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         });
       }
 
-      // Apply Filter before rendering
       let visiblePositions = cloudPositions.filter(p => !hideExpired || p.exp >= todayStr);
       if (activeFilter !== 'ALL') {
         visiblePositions = visiblePositions.filter(p => p.ticker === activeFilter);
@@ -668,19 +671,34 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         if (isExpired) {
           if (p.action === 'SELL') {
-            if (spot !== null) {
-              const isWin = (p.type === 'PUT' && spot >= p.strike) || (p.type === 'CALL' && spot <= p.strike);
-              if (isWin) { maxPl = p.prem * 100 * p.qty; statusHtml = '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">Expired (Win)</span>'; }
-              else {
-                maxPl = (p.prem - (p.type === 'PUT' ? Math.max(p.strike - spot, 0) : Math.max(spot - p.strike, 0))) * 100 * p.qty;
-                statusHtml = '<span class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">Assigned</span>';
+            if (p.type === 'CALL') {
+              maxPl = p.prem * 100 * p.qty;
+              currentPl = maxPl;
+              const isAssigned = (spot !== null && spot >= p.strike);
+              statusHtml = isAssigned 
+                ? '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold whitespace-nowrap">Assigned (Win)</span>'
+                : '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold whitespace-nowrap">Expired (Win)</span>';
+            } else {
+              if (spot !== null) {
+                const isWin = spot >= p.strike;
+                if (isWin) { 
+                  maxPl = p.prem * 100 * p.qty; 
+                  statusHtml = '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold whitespace-nowrap">Expired (Win)</span>'; 
+                } else {
+                  maxPl = (p.prem - Math.max(p.strike - spot, 0)) * 100 * p.qty;
+                  statusHtml = '<span class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold whitespace-nowrap">Assigned</span>';
+                }
+              } else { 
+                maxPl = p.prem * 100 * p.qty; 
+                statusHtml = '<span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-bold whitespace-nowrap">Expired</span>'; 
               }
-            } else { maxPl = p.prem * 100 * p.qty; statusHtml = '<span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-bold">Expired</span>'; }
+              currentPl = maxPl;
+            }
           } else {
             maxPl = ((p.type === 'CALL' ? Math.max((spot || 0) - p.strike, 0) : Math.max(p.strike - (spot || 0), 0)) - p.prem) * 100 * p.qty;
-            statusHtml = '<span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-bold">Closed</span>';
+            statusHtml = '<span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-bold whitespace-nowrap">Closed</span>';
+            currentPl = maxPl;
           }
-          currentPl = maxPl;
         } else {
           maxPl = (p.action === 'SELL') ? (p.prem * 100 * p.qty) : (-p.prem * 100 * p.qty);
           if (liveMark !== null) currentPl = (p.action === 'SELL') ? (p.prem - liveMark) * 100 * p.qty : (liveMark - p.prem) * 100 * p.qty;
@@ -697,7 +715,7 @@ HTML_CONTENT = """<!DOCTYPE html>
               }
             } else if (p.type === 'CALL') {
               if (spot >= p.strike) {
-                statusHtml = '<span class="px-1.5 py-0.5 rounded bg-purple-700 text-white font-bold whitespace-nowrap">MAX PROFIT / ASSIGN</span>';
+                statusHtml = '<span class="px-1.5 py-0.5 rounded bg-emerald-600 text-white font-bold whitespace-nowrap">MAX PROFIT / ASSIGN</span>';
               } else if (pctFromStrike >= -alertCriteria.callWarnPct) {
                 statusHtml = '<span class="px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-bold whitespace-nowrap">TESTED</span>';
                 alertMsg = `⚠️ WARNING: ${p.ticker} $${p.strike} Call is tested. Spot is $${spot.toFixed(2)}.`;
@@ -706,7 +724,6 @@ HTML_CONTENT = """<!DOCTYPE html>
           }
         }
 
-        // --- Alert Dispatcher ---
         if (alertMsg && alertCriteria.waEnabled && alertCriteria.waNumber) {
           const now = Date.now();
           const posCooldownKey = `wa_pos_alert_${p.id}`;
@@ -940,7 +957,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         headerNotice.innerText = `🔥 High Volatility ${tableType} Alert (\u2265 ${highIvPctileThreshold}%ile)`;
         headerNotice.classList.remove('hidden');
         
-        // --- Alert Trigger Logic ---
         if (alertCriteria.waEnabled && alertCriteria.waNumber) {
           const now = Date.now();
           tickers.forEach(t => {
@@ -1194,7 +1210,6 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
     
     successful_fetches = 0
     
-    # Initialize a custom session to spoof a web browser and prevent Yahoo Finance IP Blocks
     yf_session = requests.Session()
     yf_session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -1331,15 +1346,14 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                     try:
                         loaded_chains[exp] = md_chain(ticker, exp)
                         if is_primary and ticker in diagnostics:
-                            del diagnostics[ticker] # Cleared because MarketData succeeded
+                            del diagnostics[ticker]
                         continue
                     except Exception as e:
                         if is_primary: diagnostics[ticker] = f"MarketData API blocked/failed. Add API Token."
                 
-                # Deliberate Fallback to Yahoo
                 loaded_chains[exp] = tkr.option_chain(exp)
                 if is_primary and ticker in diagnostics:
-                    del diagnostics[ticker] # Cleared because Yahoo succeeded
+                    del diagnostics[ticker]
             except Exception as e: 
                 if is_primary: diagnostics[ticker] = "Both MarketData and Yahoo Finance failed to fetch options. Please add a free MarketData API token."
                 continue
