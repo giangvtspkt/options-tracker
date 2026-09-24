@@ -163,7 +163,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       <span class="flex items-center gap-1.5"><span>⚠️</span> <span id="diagTitle">Notice</span></span>
       <span id="cacheTimestampBadge" class="text-[9px] font-mono bg-amber-200/70 px-1.5 py-0.5 rounded text-amber-900 hidden"></span>
     </div>
-    <ul id="diagList" class="list-disc list-inside space-y-0.5 text-[11px] text-amber-800"></ul>
+    <ul id="diagList" class="list-disc list-inside space-y-0.5 text-[11px] text-amber-800 mt-1"></ul>
   </div>
 
   <!-- 1. Performance & Active Positions -->
@@ -807,17 +807,26 @@ HTML_CONTENT = """<!DOCTYPE html>
       const diagList = document.getElementById('diagList');
       diagList.innerHTML = '';
 
-      if (globalData.is_cached) {
+      let hasErrors = globalData.diagnostics && Object.keys(globalData.diagnostics).length > 0;
+      
+      if (globalData.is_cached || hasErrors) {
         diagBanner.classList.remove('hidden');
-        document.getElementById('diagTitle').innerText = "Yahoo Finance Unreachable: Using Cache";
-        const li = document.createElement('li'); li.innerText = "Real-time updates failed. Showing last successful fetch."; diagList.appendChild(li);
-      } else if (globalData.diagnostics && Object.keys(globalData.diagnostics).length > 0) {
-        diagBanner.classList.remove('hidden');
-        document.getElementById('diagTitle').innerText = "Notice: Option Chain Incomplete";
-        Object.entries(globalData.diagnostics).forEach(([tkr, msg]) => {
-          const li = document.createElement('li'); li.innerHTML = `<span class="font-bold">${tkr}:</span> ${msg}`; diagList.appendChild(li);
-        });
-      } else { diagBanner.classList.add('hidden'); }
+        document.getElementById('diagTitle').innerText = globalData.is_cached ? "Data Unreachable: Using Backup Cache" : "Notice: Option Chain Errors";
+        
+        if (globalData.is_cached) {
+            const li = document.createElement('li'); 
+            li.innerHTML = `<span class="font-bold text-rose-700">Both MarketData & Yahoo Finance APIs rejected the request.</span> Showing last cached data.`; 
+            diagList.appendChild(li);
+        }
+
+        if (hasErrors) {
+            Object.entries(globalData.diagnostics).forEach(([tkr, msg]) => {
+              const li = document.createElement('li'); li.innerHTML = `<span class="font-bold">${tkr}:</span> ${msg}`; diagList.appendChild(li);
+            });
+        }
+      } else { 
+        diagBanner.classList.add('hidden'); 
+      }
     }
 
     async function fetchData(isSilent = false) {
@@ -1311,7 +1320,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                         loaded_chains[exp] = md_chain(ticker, exp)
                         continue
                     except Exception:
-                        pass
+                        pass  # explicitly fall through to Yahoo if MD chain is completely empty
                 loaded_chains[exp] = tkr.option_chain(exp)
             except Exception: continue
 
