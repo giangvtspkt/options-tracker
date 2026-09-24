@@ -282,5 +282,17 @@
     "exp": "2026-10-30",
     "trade_date": "2026-09-24",
     "broker": "ibkr"
+  },
+  {
+    "id": 1790261936500,
+    "action": "SELL",
+    "type": "PUT",
+    "ticker": "ORCL",
+    "strike": 120.0,
+    "prem": 2.6,
+    "qty": 1,
+    "exp": "2026-10-30",
+    "trade_date": "2026-09-24",
+    "broker": "ibkr"
   }
 ]
