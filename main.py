@@ -41,6 +41,7 @@ def norm_cdf(x):
 
 def calc_put_delta(S, K, T, r, sigma):
     if T <= 0 or S <= 0 or K <= 0: return 0.0
+    # Fallback ONLY for the internal math to prevent division by zero
     if not sigma or math.isnan(sigma) or sigma <= 0.001: sigma = 0.45
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
@@ -50,6 +51,7 @@ def calc_put_delta(S, K, T, r, sigma):
 
 def calc_call_delta(S, K, T, r, sigma):
     if T <= 0 or S <= 0 or K <= 0: return 0.0
+    # Fallback ONLY for the internal math to prevent division by zero
     if not sigma or math.isnan(sigma) or sigma <= 0.001: sigma = 0.45
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
@@ -585,7 +587,6 @@ HTML_CONTENT = """<!DOCTYPE html>
           let closedPl = 0;
           if (p.action === 'SELL') {
             if (p.type === 'CALL') {
-              // Covered Calls always achieve max profit at assignment since strike > purchase cost
               closedPl = p.prem * 100 * p.qty;
             } else {
               if (spot !== null) {
@@ -1209,11 +1210,6 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
     diagnostics = {}
     
     successful_fetches = 0
-    
-    yf_session = requests.Session()
-    yf_session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    })
 
     for ticker in combined_ticker_list:
         is_primary = ticker in primary_tickers
@@ -1222,11 +1218,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
         df_hist = None
         hist_vols = []
 
-        try:
-            tkr = yf.Ticker(ticker, session=yf_session)
-        except TypeError:
-            tkr = yf.Ticker(ticker)
-
+        tkr = yf.Ticker(ticker)
         use_md = (CHAIN_PROVIDER == "marketdata")
         
         # --- ISOLATED SPOT FETCH ---
@@ -1264,7 +1256,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
             try:
                 expirations = list(tkr.options) if tkr.options else []
                 if not expirations and is_primary:
-                    diagnostics[ticker] = "Yahoo Finance returned 0 expirations. You may be IP Blocked. Please add a MarketData API Token."
+                    diagnostics[ticker] = "Yahoo Finance returned 0 expirations. You may be IP Blocked."
             except Exception as e:
                 if is_primary: diagnostics[ticker] = f"Yahoo Finance Options Blocked: {str(e)[:100]}"
 
