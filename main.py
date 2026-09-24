@@ -32,15 +32,23 @@ MARKETDATA_API_TOKEN = os.getenv("MARKETDATA_API_TOKEN", "")
 MD_BASE = "https://api.marketdata.app/v1"
 MD_MODE = os.getenv("MD_MODE", "cached")
 MD_TIMEOUT = int(os.getenv("MD_TIMEOUT", "15"))
-CHAIN_PROVIDER = os.getenv("CHAIN_PROVIDER", "marketdata")
+CHAIN_PROVIDER = "marketdata" if MARKETDATA_API_TOKEN else "yfinance"
 
 CACHE_FILE_PATH = os.path.join(tempfile.gettempdir(), "options_cache_data.json")
+
+# --- Global Yahoo Finance Session Spoofing ---
+# This prevents Render from being permanently IP blocked by Yahoo Finance
+yf_session = requests.Session()
+yf_session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+})
 
 def norm_cdf(x):
     return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
 
 def calc_put_delta(S, K, T, r, sigma):
     if T <= 0 or S <= 0 or K <= 0: return 0.0
+    # Fallback ONLY for the internal math to prevent division by zero
     if not sigma or math.isnan(sigma) or sigma <= 0.001: sigma = 0.45
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
@@ -50,6 +58,7 @@ def calc_put_delta(S, K, T, r, sigma):
 
 def calc_call_delta(S, K, T, r, sigma):
     if T <= 0 or S <= 0 or K <= 0: return 0.0
+    # Fallback ONLY for the internal math to prevent division by zero
     if not sigma or math.isnan(sigma) or sigma <= 0.001: sigma = 0.45
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
@@ -1130,24 +1139,24 @@ def md_chain(ticker, expiration):
     """Return SimpleNamespace(calls=DataFrame, puts=DataFrame), like yf option_chain()."""
     base = {"expiration": expiration, "mode": MD_MODE}
     
-    calls_df, puts_df = pd.DataFrame(), pd.DataFrame()
-    
+    # Send a single request; marketdata returns both calls & puts if side is omitted
     try:
-        calls_data = md_request(f"/options/chain/{ticker}/", {**base, "side": "call"})
-        calls_df = _md_chain_df(calls_data)
+        data = md_request(f"/options/chain/{ticker}/", base)
+        df = _md_chain_df(data)
     except Exception:
-        pass
+        df = pd.DataFrame()
         
-    try:
-        puts_data = md_request(f"/options/chain/{ticker}/", {**base, "side": "put"})
-        puts_df = _md_chain_df(puts_data)
-    except Exception:
-        pass
-        
-    if calls_df.empty and puts_df.empty:
+    if df.empty:
         raise ValueError(f"No chain data returned by marketdata for {ticker} at {expiration}")
         
-    return SimpleNamespace(calls=calls_df, puts=puts_df)
+    if "side" in df.columns:
+        calls = df[df["side"] == "call"].reset_index(drop=True)
+        puts = df[df["side"] == "put"].reset_index(drop=True)
+    else:
+        calls = df
+        puts = df
+        
+    return SimpleNamespace(calls=calls, puts=puts)
 
 def _native_delta(row, bs_delta):
     """Prefer the provider's native delta when present; else the Black-Scholes value."""
@@ -1193,27 +1202,45 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
         df_hist = None
         hist_vols = []
 
-        tkr = yf.Ticker(ticker)
+        tkr = yf.Ticker(ticker, session=yf_session)
         use_md = (CHAIN_PROVIDER == "marketdata")
+        
+        # --- ISOLATED SPOT FETCH ---
         if use_md:
             try:
                 spot_price = md_spot(ticker)
-                expirations = md_expirations(ticker)
             except Exception as e:
                 use_md = False
                 if is_primary:
                     diagnostics[ticker] = f"marketdata.app failed, fell back to Yahoo: {str(e)[:120]}"
 
-        try:
-            if not use_md:
+        if not spot_price or spot_price <= 0:
+            try:
+                if hasattr(tkr, 'fast_info'):
+                    spot_price = float(tkr.fast_info.get('last_price') or tkr.fast_info.get('lastPrice') or 0.0)
+            except Exception: pass
+            
+            if not spot_price or spot_price <= 0:
                 try:
                     hist_1d = tkr.history(period="5d")
                     if not hist_1d.empty: spot_price = float(hist_1d['Close'].iloc[-1])
-                except Exception:
-                    pass
+                except Exception: pass
 
+        # --- ISOLATED EXPIRATIONS FETCH ---
+        if use_md:
+            try:
+                expirations = md_expirations(ticker)
+            except Exception:
+                use_md = False
+                
+        if not expirations:
+            try:
                 expirations = list(tkr.options) if tkr.options else []
-            
+            except Exception as e:
+                if is_primary: diagnostics[ticker] = f"Yahoo options failed: {str(e)[:120]}"
+
+        # --- ISOLATED HISTORICAL VOLATILITY FETCH ---
+        try:
             df_hist_1y = tkr.history(period="1y")
             if df_hist_1y is not None and not df_hist_1y.empty and 'Close' in df_hist_1y.columns:
                 df_hist = df_hist_1y.tail(30)
@@ -1225,10 +1252,10 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                     hist_vols = [float(v) for v in rolling_vol.dropna().tolist() if not math.isnan(v) and v > 0]
             else:
                 df_hist = tkr.history(period="30d")
+        except Exception:
+            pass
 
-            if spot_price > 0: successful_fetches += 1
-        except Exception as e:
-            if is_primary: diagnostics[ticker] = f"Error reaching market data ({'marketdata.app' if use_md else 'Yahoo Finance'}): {str(e)[:120]}"
+        if spot_price > 0: successful_fetches += 1
 
         if not spot_price or spot_price <= 0:
             if is_primary and ticker not in all_spots: diagnostics[ticker] = "No spot price available"
