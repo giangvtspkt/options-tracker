@@ -36,19 +36,11 @@ CHAIN_PROVIDER = "marketdata" if MARKETDATA_API_TOKEN else "yfinance"
 
 CACHE_FILE_PATH = os.path.join(tempfile.gettempdir(), "options_cache_data.json")
 
-# --- Global Yahoo Finance Session Spoofing ---
-# This prevents Render from being permanently IP blocked by Yahoo Finance
-yf_session = requests.Session()
-yf_session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-})
-
 def norm_cdf(x):
     return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
 
 def calc_put_delta(S, K, T, r, sigma):
     if T <= 0 or S <= 0 or K <= 0: return 0.0
-    # Fallback ONLY for the internal math to prevent division by zero
     if not sigma or math.isnan(sigma) or sigma <= 0.001: sigma = 0.45
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
@@ -58,7 +50,6 @@ def calc_put_delta(S, K, T, r, sigma):
 
 def calc_call_delta(S, K, T, r, sigma):
     if T <= 0 or S <= 0 or K <= 0: return 0.0
-    # Fallback ONLY for the internal math to prevent division by zero
     if not sigma or math.isnan(sigma) or sigma <= 0.001: sigma = 0.45
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
@@ -1086,8 +1077,8 @@ def md_request(path, params=None):
     """GET a marketdata.app endpoint. Returns decoded JSON; raises on any error."""
     url = f"{MD_BASE}{path}"
     headers = {}
-    if MARKETDATA_API_TOKEN:
-        headers["Authorization"] = f"Bearer {MARKETDATA_API_TOKEN}"
+    if MARKETDATA_API_TOKEN and MARKETDATA_API_TOKEN.strip():
+        headers["Authorization"] = f"Bearer {MARKETDATA_API_TOKEN.strip()}"
     r = requests.get(url, headers=headers, params=params or {}, timeout=MD_TIMEOUT)
     r.raise_for_status()
     data = r.json()
@@ -1202,7 +1193,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
         df_hist = None
         hist_vols = []
 
-        tkr = yf.Ticker(ticker, session=yf_session)
+        tkr = yf.Ticker(ticker)
         use_md = (CHAIN_PROVIDER == "marketdata")
         
         # --- ISOLATED SPOT FETCH ---
@@ -1214,13 +1205,15 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                 if is_primary:
                     diagnostics[ticker] = f"marketdata.app failed, fell back to Yahoo: {str(e)[:120]}"
 
-        if not spot_price or spot_price <= 0:
+        if spot_price is None or math.isnan(spot_price) or spot_price <= 0:
             try:
                 if hasattr(tkr, 'fast_info'):
-                    spot_price = float(tkr.fast_info.get('last_price') or tkr.fast_info.get('lastPrice') or 0.0)
+                    sp = tkr.fast_info.get('last_price') or tkr.fast_info.get('lastPrice')
+                    if sp is not None:
+                        spot_price = float(sp)
             except Exception: pass
             
-            if not spot_price or spot_price <= 0:
+            if spot_price is None or math.isnan(spot_price) or spot_price <= 0:
                 try:
                     hist_1d = tkr.history(period="5d")
                     if not hist_1d.empty: spot_price = float(hist_1d['Close'].iloc[-1])
@@ -1255,9 +1248,9 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
         except Exception:
             pass
 
-        if spot_price > 0: successful_fetches += 1
-
-        if not spot_price or spot_price <= 0:
+        if spot_price is not None and not math.isnan(spot_price) and spot_price > 0: 
+            successful_fetches += 1
+        else:
             if is_primary and ticker not in all_spots: diagnostics[ticker] = "No spot price available"
             continue
 
@@ -1271,15 +1264,18 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
             ticker_hv_pctile = round((count_below / len(hist_vols)) * 100.0, 1)
 
         if df_hist is not None and not df_hist.empty and len(df_hist) >= 2:
-            prev_high, prev_low, prev_close = float(df_hist['High'].iloc[-2]), float(df_hist['Low'].iloc[-2]), float(df_hist['Close'].iloc[-2])
-            if math.isnan(prev_high) or math.isnan(prev_low) or math.isnan(prev_close):
+            try:
+                prev_high, prev_low, prev_close = float(df_hist['High'].iloc[-2]), float(df_hist['Low'].iloc[-2]), float(df_hist['Close'].iloc[-2])
+                if math.isnan(prev_high) or math.isnan(prev_low) or math.isnan(prev_close):
+                    s1, r1, rolling_support, rolling_resistance = spot_price * 0.95, spot_price * 1.05, spot_price * 0.90, spot_price * 1.10
+                else:
+                    pivot = (prev_high + prev_low + prev_close) / 3.0
+                    s1, r1 = (2 * pivot) - prev_high, (2 * pivot) - prev_low
+                    rolling_support, rolling_resistance = float(df_hist['Low'].min()), float(df_hist['High'].max())
+                    if math.isnan(rolling_support): rolling_support = spot_price * 0.90
+                    if math.isnan(rolling_resistance): rolling_resistance = spot_price * 1.10
+            except Exception:
                 s1, r1, rolling_support, rolling_resistance = spot_price * 0.95, spot_price * 1.05, spot_price * 0.90, spot_price * 1.10
-            else:
-                pivot = (prev_high + prev_low + prev_close) / 3.0
-                s1, r1 = (2 * pivot) - prev_high, (2 * pivot) - prev_low
-                rolling_support, rolling_resistance = float(df_hist['Low'].min()), float(df_hist['High'].max())
-                if math.isnan(rolling_support): rolling_support = spot_price * 0.90
-                if math.isnan(rolling_resistance): rolling_resistance = spot_price * 1.10
         else:
             s1, r1, rolling_support, rolling_resistance = spot_price * 0.95, spot_price * 1.05, spot_price * 0.90, spot_price * 1.10
 
@@ -1315,19 +1311,23 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                         loaded_chains[exp] = md_chain(ticker, exp)
                         continue
                     except Exception:
-                        pass  # explicitly fall through to Yahoo if MD chain is completely empty
+                        pass
                 loaded_chains[exp] = tkr.option_chain(exp)
             except Exception: continue
 
         for p in positions:
-            p_tkr, p_exp, p_type, k_target = str(p.get("ticker", "")).strip().upper(), str(p.get("exp", "")).strip(), str(p.get("type", "")).strip().upper(), float(p.get("strike", 0))
-            if p_tkr == ticker and p_exp in loaded_chains:
-                df_opts = loaded_chains[p_exp].puts if p_type == "PUT" else loaded_chains[p_exp].calls
-                if df_opts is not None and not df_opts.empty:
-                    diffs = (df_opts["strike"] - k_target).abs()
-                    min_idx = diffs.idxmin()
-                    if diffs.loc[min_idx] <= 0.5:
-                        live_positions[f"{p_tkr}_{p_exp}_{k_target:.2f}_{p_type}"] = round(get_safe_mid_price(df_opts.loc[min_idx]), 2)
+            try:
+                p_tkr, p_exp, p_type, k_target = str(p.get("ticker", "")).strip().upper(), str(p.get("exp", "")).strip(), str(p.get("type", "")).strip().upper(), float(p.get("strike", 0))
+                if p_tkr == ticker and p_exp in loaded_chains:
+                    df_opts = loaded_chains[p_exp].puts if p_type == "PUT" else loaded_chains[p_exp].calls
+                    if df_opts is not None and not df_opts.empty and "strike" in df_opts.columns:
+                        diffs = (df_opts["strike"] - k_target).abs()
+                        if not diffs.empty:
+                            min_idx = diffs.idxmin()
+                            if pd.notna(min_idx) and diffs.loc[min_idx] <= 0.5:
+                                live_positions[f"{p_tkr}_{p_exp}_{k_target:.2f}_{p_type}"] = round(get_safe_mid_price(df_opts.loc[min_idx]), 2)
+            except Exception:
+                pass
 
         if is_primary:
             for target, exp in target_to_exp.items():
@@ -1343,6 +1343,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                     for _, row in chain.puts.iterrows():
                         try:
                             K = float(row['strike'])
+                            if math.isnan(K) or K <= 0: continue
                             
                             iv_raw = row.get('impliedVolatility')
                             try:
@@ -1378,6 +1379,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                     for _, row in chain.calls.iterrows():
                         try:
                             K = float(row['strike'])
+                            if math.isnan(K) or K <= 0: continue
                             
                             iv_raw = row.get('impliedVolatility')
                             try:
