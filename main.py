@@ -32,7 +32,6 @@ MARKETDATA_API_TOKEN = os.getenv("MARKETDATA_API_TOKEN", "")
 MD_BASE = "https://api.marketdata.app/v1"
 MD_MODE = os.getenv("MD_MODE", "cached")
 MD_TIMEOUT = int(os.getenv("MD_TIMEOUT", "15"))
-CHAIN_PROVIDER = "marketdata" if MARKETDATA_API_TOKEN else "yfinance"
 
 CACHE_FILE_PATH = os.path.join(tempfile.gettempdir(), "options_cache_data.json")
 
@@ -41,7 +40,6 @@ def norm_cdf(x):
 
 def calc_put_delta(S, K, T, r, sigma):
     if T <= 0 or S <= 0 or K <= 0: return 0.0
-    # Fallback ONLY for the internal math to prevent division by zero
     if not sigma or math.isnan(sigma) or sigma <= 0.001: sigma = 0.45
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
@@ -51,7 +49,6 @@ def calc_put_delta(S, K, T, r, sigma):
 
 def calc_call_delta(S, K, T, r, sigma):
     if T <= 0 or S <= 0 or K <= 0: return 0.0
-    # Fallback ONLY for the internal math to prevent division by zero
     if not sigma or math.isnan(sigma) or sigma <= 0.001: sigma = 0.45
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
@@ -358,7 +355,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
   <!-- 2. Tickers & Delta Box -->
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
-    <div class="grid grid-cols-2 gap-2 mb-2">
+    <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-2">
       <div>
         <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Tickers</label>
         <input id="tickers" type="text" value="IREN, RKLB" class="w-full border rounded p-2 text-sm uppercase font-semibold">
@@ -366,6 +363,13 @@ HTML_CONTENT = """<!DOCTYPE html>
       <div>
         <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Delta</label>
         <input id="delta" type="number" step="0.01" value="0.2" class="w-full border rounded p-2 text-sm font-semibold">
+      </div>
+      <div class="col-span-2 sm:col-span-1">
+        <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Data Source</label>
+        <select id="providerSelect" class="w-full border rounded p-2 text-sm font-semibold bg-white text-slate-700">
+          <option value="marketdata">MarketData.app (Fast)</option>
+          <option value="yfinance">Yahoo Finance (Free)</option>
+        </select>
       </div>
     </div>
     <button onclick="fetchData(false)" id="refreshBtn" class="bg-blue-600 active:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg text-sm w-full mt-1 flex items-center justify-center gap-2">
@@ -710,7 +714,7 @@ HTML_CONTENT = """<!DOCTYPE html>
               if (spot <= p.strike || (dte <= alertCriteria.putCritDte && pctFromStrike <= 1.5)) {
                 statusHtml = '<span class="px-1.5 py-0.5 rounded bg-rose-600 text-white font-extrabold animate-pulse whitespace-nowrap">ROLL / ASSIGN NOW</span>';
                 alertMsg = `🚨 CRITICAL: ${p.ticker} $${p.strike} Put needs attention (ROLL / ASSIGN NOW). Spot is $${spot.toFixed(2)} (${pctFromStrike > 0 ? '+' : ''}${pctFromStrike.toFixed(1)}%).`;
-              } else if (pctFromStrike <= alertCriteria.putWarnPct || (dte <= alertCriteria.putWarnDte && currentPl < 0)) {
+              } else if (pctFromStrike <= alertCriteria.putWarnPct) {
                 statusHtml = '<span class="px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-extrabold whitespace-nowrap">ROLL SOON</span>';
                 alertMsg = `⚠️ WARNING: ${p.ticker} $${p.strike} Put is tested (ROLL SOON). Spot is $${spot.toFixed(2)} (${pctFromStrike > 0 ? '+' : ''}${pctFromStrike.toFixed(1)}%). DTE: ${dte}d.`;
               }
@@ -853,17 +857,19 @@ HTML_CONTENT = """<!DOCTYPE html>
       
       const tickersInput = document.getElementById('tickers').value;
       const deltaInput = document.getElementById('delta').value;
+      const providerInput = document.getElementById('providerSelect').value;
       
       const tickers = tickersInput || "IREN,RKLB";
       const delta = deltaInput || "0.2";
       
       localStorage.setItem('savedTickers', tickers);
       localStorage.setItem('savedDelta', delta);
+      localStorage.setItem('savedProvider', providerInput);
       
       const contractTickers = Array.from(new Set(cloudPositions.map(p => (p.ticker || '').trim().toUpperCase()))).filter(Boolean);
 
       try {
-        const res = await fetch(`/api/data?tickers=${encodeURIComponent(tickers)}&contract_tickers=${encodeURIComponent(contractTickers.join(','))}&delta=${delta}`);
+        const res = await fetch(`/api/data?tickers=${encodeURIComponent(tickers)}&contract_tickers=${encodeURIComponent(contractTickers.join(','))}&delta=${delta}&provider=${providerInput}`);
         if (!res.ok) throw new Error("API error");
         const data = await res.json();
         localStorage.setItem('cached_options_payload', JSON.stringify(data));
@@ -995,6 +1001,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (savedTickers) document.getElementById('tickers').value = savedTickers;
       const savedDelta = localStorage.getItem('savedDelta');
       if (savedDelta) document.getElementById('delta').value = savedDelta;
+      const savedProvider = localStorage.getItem('savedProvider');
+      if (savedProvider) document.getElementById('providerSelect').value = savedProvider;
 
       loadAlertCriteria();
       await loadCloudPositions();
@@ -1187,7 +1195,7 @@ def _native_delta(row, bs_delta):
     return bs_delta
 
 @app.get("/api/data")
-def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", delta: float = 0.2):
+def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", delta: float = 0.2, provider: str = "marketdata"):
     positions, _ = get_positions_from_github()
     cache_store = load_cached_data()
     
@@ -1219,7 +1227,9 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
         hist_vols = []
 
         tkr = yf.Ticker(ticker)
-        use_md = (CHAIN_PROVIDER == "marketdata")
+        
+        # User dropdown overrides the default behavior
+        use_md = (provider == "marketdata")
         
         # --- ISOLATED SPOT FETCH ---
         if use_md:
@@ -1255,10 +1265,8 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
         if not expirations:
             try:
                 expirations = list(tkr.options) if tkr.options else []
-                if not expirations and is_primary:
-                    diagnostics[ticker] = "Yahoo Finance returned 0 expirations. You may be IP Blocked."
             except Exception as e:
-                if is_primary: diagnostics[ticker] = f"Yahoo Finance Options Blocked: {str(e)[:100]}"
+                if is_primary: diagnostics[ticker] = f"Yahoo Finance Options Failed: {str(e)[:100]}"
 
         # --- ISOLATED HISTORICAL VOLATILITY FETCH ---
         try:
@@ -1347,7 +1355,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
                 if is_primary and ticker in diagnostics:
                     del diagnostics[ticker]
             except Exception as e: 
-                if is_primary: diagnostics[ticker] = "Both MarketData and Yahoo Finance failed to fetch options. Please add a free MarketData API token."
+                if is_primary: diagnostics[ticker] = "Both MarketData and Yahoo Finance failed to fetch options."
                 continue
 
         for p in positions:
@@ -1450,7 +1458,7 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
         "market": {t: market_data[t] for t in primary_tickers if t in market_data},
         "all_spots": all_spots, "puts": results_puts, "calls": results_calls,
         "tickers": primary_tickers, "targets": target_periods, "live_positions": live_positions,
-        "diagnostics": diagnostics, "is_cached": is_cached_payload, "provider": CHAIN_PROVIDER,
+        "diagnostics": diagnostics, "is_cached": is_cached_payload, "provider": provider,
         "cached_at": cache_store.get("cached_at") if is_cached_payload else datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     if successful_fetches > 0: save_cached_data(payload)
