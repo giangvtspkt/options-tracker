@@ -306,5 +306,17 @@
     "exp": "2026-10-02",
     "trade_date": "2026-09-24",
     "broker": "ibkr"
+  },
+  {
+    "id": 1790356218634,
+    "action": "SELL",
+    "type": "PUT",
+    "ticker": "WULF",
+    "strike": 15.0,
+    "prem": 1.11,
+    "qty": 5,
+    "exp": "2026-10-30",
+    "trade_date": "2026-09-25",
+    "broker": "moomoo"
   }
 ]
