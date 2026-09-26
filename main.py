@@ -1460,7 +1460,7 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
 
     # --- WEBSHARE PROXY SESSION SETUP ---
     yf_session = requests.Session()
-    proxy_url = "http://ehgblhyh:orsh04zky31o@198.46.161.42:5092"
+    proxy_url = "http://ehgblhyh:orsh04zky31o@31.58.9.4:6077"
     yf_session.proxies.update({
         "http": proxy_url,
         "https": proxy_url
