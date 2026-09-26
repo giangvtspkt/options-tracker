@@ -32,7 +32,6 @@ MARKETDATA_API_TOKEN = os.getenv("MARKETDATA_API_TOKEN", "")
 MD_BASE = "https://api.marketdata.app/v1"
 MD_MODE = os.getenv("MD_MODE", "cached")
 MD_TIMEOUT = int(os.getenv("MD_TIMEOUT", "15"))
-CHAIN_PROVIDER = "marketdata" if MARKETDATA_API_TOKEN else "yfinance"
 
 CACHE_FILE_PATH = os.path.join(tempfile.gettempdir(), "options_cache_data.json")
 
@@ -214,27 +213,27 @@ HTML_CONTENT = """<!DOCTYPE html>
       <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-[10px]">
         <div>
           <label class="font-semibold text-slate-600 block mb-0.5">CSP Warn Buffer (%)</label>
-          <input id="critPutWarnPct" type="number" step="0.5" class="w-full border rounded p-1.5 text-xs bg-white" onchange="saveAlertCriteria()">
+          <input id="critPutWarnPct" type="number" step="0.5" class="w-full border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
         </div>
         <div>
           <label class="font-semibold text-slate-600 block mb-0.5">CSP Warn DTE (&le; days)</label>
-          <input id="critPutWarnDte" type="number" step="1" class="w-full border rounded p-1.5 text-xs bg-white" onchange="saveAlertCriteria()">
+          <input id="critPutWarnDte" type="number" step="1" class="w-full border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
         </div>
         <div>
           <label class="font-semibold text-slate-600 block mb-0.5">CSP Critical DTE (&le; days)</label>
-          <input id="critPutCritDte" type="number" step="1" class="w-full border rounded p-1.5 text-xs bg-white" onchange="saveAlertCriteria()">
+          <input id="critPutCritDte" type="number" step="1" class="w-full border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
         </div>
         <div>
           <label class="font-semibold text-slate-600 block mb-0.5">CC Tested Buffer (%)</label>
-          <input id="critCallWarnPct" type="number" step="0.5" class="w-full border rounded p-1.5 text-xs bg-white" onchange="saveAlertCriteria()">
+          <input id="critCallWarnPct" type="number" step="0.5" class="w-full border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
         </div>
         <div class="bg-amber-50/70 p-1.5 rounded border border-amber-200">
           <label class="font-bold text-amber-900 block mb-0.5">🔥 Put High Vol (%ile)</label>
-          <input id="critPutHighIvPctile" type="number" step="5" class="w-full border rounded p-1.5 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
+          <input id="critPutHighIvPctile" type="number" step="5" class="w-full border rounded p-1 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
         </div>
         <div class="bg-amber-50/70 p-1.5 rounded border border-amber-200">
           <label class="font-bold text-amber-900 block mb-0.5">🔥 Call High Vol (%ile)</label>
-          <input id="critCallHighIvPctile" type="number" step="5" class="w-full border rounded p-1.5 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
+          <input id="critCallHighIvPctile" type="number" step="5" class="w-full border rounded p-1 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
         </div>
         <!-- Alert Recipient Settings -->
         <div class="col-span-2 sm:col-span-3 mt-1 pt-2 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center gap-2">
@@ -347,7 +346,11 @@ HTML_CONTENT = """<!DOCTYPE html>
       <table class="w-full text-left text-[10px]">
         <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold">
           <tr>
-            <th class="p-1.5 border-r">Broker</th>
+            <th class="p-1.5 border-r p-0">
+               <select id="posBrokerFilter" onchange="renderPositionsAndPL()" class="w-full bg-transparent font-bold text-slate-600 outline-none cursor-pointer px-1 py-1">
+                 <option value="ALL">Broker (All)</option>
+               </select>
+            </th>
             <th class="p-1.5 border-r">Pos</th>
             <th class="p-1.5 border-r p-0">
                <select id="posTickerFilter" onchange="renderPositionsAndPL()" class="w-full bg-transparent font-bold text-slate-600 outline-none cursor-pointer px-1 py-1">
@@ -580,6 +583,17 @@ HTML_CONTENT = """<!DOCTYPE html>
     function renderPositionsAndPL() {
       document.getElementById('hideExpiredToggle').checked = hideExpired;
       
+      // Setup Broker Filter Dropdown
+      const brokerFilterSelect = document.getElementById('posBrokerFilter');
+      const currentBrokerFilter = brokerFilterSelect ? brokerFilterSelect.value : 'ALL';
+      const uniqueBrokers = Array.from(new Set(cloudPositions.map(p => (p.broker || 'moomoo').toUpperCase()))).sort();
+      if (brokerFilterSelect) {
+        brokerFilterSelect.innerHTML = `<option value="ALL">Broker (All)</option>` + uniqueBrokers.map(b => `<option value="${b}">${b}</option>`).join('');
+        brokerFilterSelect.value = uniqueBrokers.includes(currentBrokerFilter) ? currentBrokerFilter : 'ALL';
+      }
+      const activeBrokerFilter = brokerFilterSelect ? brokerFilterSelect.value : 'ALL';
+
+      // Setup Ticker Filter Dropdown
       const filterSelect = document.getElementById('posTickerFilter');
       const currentFilter = filterSelect ? filterSelect.value : 'ALL';
       const uniqueTickers = Array.from(new Set(cloudPositions.map(p => p.ticker))).sort();
@@ -613,7 +627,8 @@ HTML_CONTENT = """<!DOCTYPE html>
             moomooCsp: 0,
             ibkrCsp: 0,
             realizedPl: 0,
-            unrealizedPl: 0
+            unrealizedPl: 0,
+            maxUnrealizedPl: 0
           };
         }
       };
@@ -668,6 +683,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
           const maxPl = (p.action === 'SELL') ? (p.prem * 100 * p.qty) : (-p.prem * 100 * p.qty);
           totalMaxUnrealized += maxPl;
+          tickerStats[tkr].maxUnrealizedPl += maxPl;
           if (isThisMonth) thisMonthCurrentUnrealized += maxPl;
 
           if (liveMark !== null) {
@@ -687,7 +703,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       const fmt = (val) => `${val >= 0 ? '+$' : '-$'}${Math.abs(val).toFixed(2)}`;
 
-      // Render cards with individual ticker realized/unrealized metrics
+      // Render cards with individual ticker realized, current unrealized, and max unrealized metrics
       const allTickers = Object.keys(tickerStats).sort();
       if (allTickers.length === 0) summaryContainer.innerHTML = '<span class="text-slate-400 text-[10px]">No active or closed positions found.</span>';
       else {
@@ -707,16 +723,19 @@ HTML_CONTENT = """<!DOCTYPE html>
 
           const realColor = s.realizedPl >= 0 ? 'text-emerald-700 font-bold' : 'text-rose-700 font-bold';
           const unrealColor = s.unrealizedPl >= 0 ? 'text-emerald-700 font-bold' : 'text-rose-700 font-bold';
+          const maxUnrealColor = s.maxUnrealizedPl >= 0 ? 'text-emerald-700 font-bold' : 'text-rose-700 font-bold';
 
           card.innerHTML = `
             <div class="flex items-center gap-1.5">
               <span class="font-extrabold text-slate-800 text-[11px]">${t}</span>
               <span class="text-[9px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-mono font-semibold">${s.total} Open (${s.puts}P / ${s.calls}C)</span>
             </div>
-            <div class="flex items-center gap-2 font-mono text-[9.5px]">
+            <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[9.5px]">
               <span>Realized: <span class="${realColor}">${fmt(s.realizedPl)}</span></span>
               <span class="text-slate-300">|</span>
-              <span>Unrealized: <span class="${unrealColor}">${fmt(s.unrealizedPl)}</span></span>
+              <span>Cur Unreal: <span class="${unrealColor}">${fmt(s.unrealizedPl)}</span></span>
+              <span class="text-slate-300">|</span>
+              <span>Max Unreal: <span class="${maxUnrealColor}">${fmt(s.maxUnrealizedPl)}</span></span>
             </div>
             ${cspBadges}
           `;
@@ -724,7 +743,11 @@ HTML_CONTENT = """<!DOCTYPE html>
         });
       }
 
+      // Apply Broker & Contract Filters
       let visiblePositions = cloudPositions.filter(p => !hideExpired || p.exp >= todayStr);
+      if (activeBrokerFilter !== 'ALL') {
+        visiblePositions = visiblePositions.filter(p => (p.broker || 'moomoo').toUpperCase() === activeBrokerFilter);
+      }
       if (activeFilter !== 'ALL') {
         visiblePositions = visiblePositions.filter(p => p.ticker === activeFilter);
       }
