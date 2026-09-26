@@ -32,7 +32,6 @@ MARKETDATA_API_TOKEN = os.getenv("MARKETDATA_API_TOKEN", "")
 MD_BASE = "https://api.marketdata.app/v1"
 MD_MODE = os.getenv("MD_MODE", "cached")
 MD_TIMEOUT = int(os.getenv("MD_TIMEOUT", "15"))
-CHAIN_PROVIDER = "marketdata" if MARKETDATA_API_TOKEN else "yfinance"
 
 CACHE_FILE_PATH = os.path.join(tempfile.gettempdir(), "options_cache_data.json")
 
@@ -704,10 +703,17 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       const fmt = (val) => `${val >= 0 ? '+$' : '-$'}${Math.abs(val).toFixed(2)}`;
 
-      // Render cards with individual ticker realized, current unrealized, and max unrealized MINIMALIST BAR CHARTS
+      // Calculate Global Benchmark for Max Unrealized comparison across all tickers
       const allTickers = Object.keys(tickerStats).sort();
-      if (allTickers.length === 0) summaryContainer.innerHTML = '<span class="text-slate-400 text-[10px]">No active or closed positions found.</span>';
-      else {
+      let globalMaxUnrealAbs = 1;
+      if (allTickers.length > 0) {
+        globalMaxUnrealAbs = Math.max(...allTickers.map(t => Math.abs(tickerStats[t].maxUnrealizedPl)));
+        if (globalMaxUnrealAbs === 0) globalMaxUnrealAbs = 1;
+      }
+
+      if (allTickers.length === 0) {
+        summaryContainer.innerHTML = '<span class="text-slate-400 text-[10px]">No active or closed positions found.</span>';
+      } else {
         summaryContainer.innerHTML = '';
         allTickers.forEach(t => {
           const s = tickerStats[t];
@@ -722,16 +728,29 @@ HTML_CONTENT = """<!DOCTYPE html>
             cspBadges = `<div class="bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded flex items-center justify-center gap-1 text-[9px] font-mono mt-1">${parts.join(' | ')}</div>`;
           }
 
-          const maxAbs = Math.max(Math.abs(s.realizedPl), Math.abs(s.unrealizedPl), Math.abs(s.maxUnrealizedPl)) || 1;
+          const localMaxAbs = Math.max(Math.abs(s.realizedPl), Math.abs(s.unrealizedPl), Math.abs(s.maxUnrealizedPl)) || 1;
           
-          const buildBar = (label, val) => {
-            const pct = Math.min((Math.abs(val) / maxAbs) * 100, 100);
+          const buildBar = (label, val, useGlobalColor = false) => {
+            const pct = Math.min((Math.abs(val) / localMaxAbs) * 100, 100);
             const isPos = val >= 0;
-            const bgStr = isPos ? 'bg-emerald-200/60' : 'bg-rose-200/60';
+            
+            let bgStyle = '';
+            let bgClass = 'transition-all duration-500';
+            
+            if (useGlobalColor) {
+              // Scale the color opacity based on how large this ticker's Max Unrealized is vs the Global Max
+              const intensity = Math.abs(val) / globalMaxUnrealAbs;
+              const alpha = 0.15 + (0.7 * intensity); // Scales between 0.15 and 0.85 opacity
+              const rgb = isPos ? '5, 150, 105' : '225, 29, 72'; // Emerald / Rose rgb values
+              bgStyle = `background-color: rgba(${rgb}, ${alpha});`;
+            } else {
+              bgClass += isPos ? ' bg-emerald-200/60' : ' bg-rose-200/60';
+            }
+
             const txtStr = isPos ? 'text-emerald-800' : 'text-rose-800';
             return `
               <div class="relative w-full bg-slate-50 border border-slate-100 rounded h-4 flex items-center px-1.5 overflow-hidden">
-                <div class="absolute left-0 top-0 h-full ${bgStr} transition-all duration-500" style="width: ${pct}%"></div>
+                <div class="absolute left-0 top-0 h-full ${bgClass}" style="width: ${pct}%; ${bgStyle}"></div>
                 <div class="relative z-10 w-full flex justify-between text-[9px] font-mono leading-none items-center">
                   <span class="text-slate-500 font-semibold">${label}</span>
                   <span class="font-bold ${txtStr}">${fmt(val)}</span>
@@ -740,14 +759,15 @@ HTML_CONTENT = """<!DOCTYPE html>
             `;
           };
 
+          // The third bar (Max Unreal) receives true for useGlobalColor
           card.innerHTML = `
             <div class="flex items-center justify-between mb-1">
               <span class="font-extrabold text-slate-800 text-[11px]">${t}</span>
               <span class="text-[8.5px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-mono font-semibold">${s.total} Open (${s.puts}P / ${s.calls}C)</span>
             </div>
-            ${buildBar('Realized', s.realizedPl)}
-            ${buildBar('Cur Unreal', s.unrealizedPl)}
-            ${buildBar('Max Unreal', s.maxUnrealizedPl)}
+            ${buildBar('Realized', s.realizedPl, false)}
+            ${buildBar('Cur Unreal', s.unrealizedPl, false)}
+            ${buildBar('Max Unreal', s.maxUnrealizedPl, true)}
             ${cspBadges}
           `;
           summaryContainer.appendChild(card);
