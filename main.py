@@ -396,8 +396,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       <div class="col-span-2 sm:col-span-1">
         <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Data Source</label>
         <select id="providerSelect" class="w-full border rounded p-2 text-sm font-semibold bg-white text-slate-700">
-          <option value="marketdata">MarketData.app (Fast)</option>
           <option value="yfinance">Yahoo Finance (Free)</option>
+          <option value="marketdata">MarketData.app (Fast)</option>
         </select>
       </div>
     </div>
@@ -1220,10 +1220,12 @@ HTML_CONTENT = """<!DOCTYPE html>
     (async () => {
       const savedTickers = localStorage.getItem('savedTickers');
       if (savedTickers) document.getElementById('tickers').value = savedTickers;
+      else document.getElementById('tickers').value = "IREN, RKLB, AMD";
       const savedDelta = localStorage.getItem('savedDelta');
       if (savedDelta) document.getElementById('delta').value = savedDelta;
       const savedProvider = localStorage.getItem('savedProvider');
       if (savedProvider) document.getElementById('providerSelect').value = savedProvider;
+      else document.getElementById('providerSelect').value = 'yfinance';
 
       loadAlertCriteria();
       await loadCloudPositions();
@@ -1432,7 +1434,7 @@ def _native_delta(row, bs_delta):
     return bs_delta
 
 @app.get("/api/data")
-def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "", delta: float = 0.2, provider: str = "marketdata"):
+def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "", delta: float = 0.2, provider: str = "yfinance"):
     positions, _ = get_positions_from_github()
     cache_store = load_cached_data()
     
@@ -1456,6 +1458,17 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
     
     successful_fetches = 0
 
+    # --- WEBSHARE PROXY SESSION SETUP ---
+    yf_session = requests.Session()
+    proxy_url = "http://ehgblhyh:orsh04zky31o@198.23.243.226:6361"
+    yf_session.proxies.update({
+        "http": proxy_url,
+        "https": proxy_url
+    })
+    yf_session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    })
+
     for ticker in combined_ticker_list:
         is_primary = ticker in primary_tickers
         spot_price = 0.0
@@ -1463,7 +1476,7 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
         df_hist = None
         hist_vols = []
 
-        tkr = yf.Ticker(ticker)
+        tkr = yf.Ticker(ticker, session=yf_session)
         
         use_md = (provider == "marketdata")
         
