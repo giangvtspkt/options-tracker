@@ -32,6 +32,7 @@ MARKETDATA_API_TOKEN = os.getenv("MARKETDATA_API_TOKEN", "")
 MD_BASE = "https://api.marketdata.app/v1"
 MD_MODE = os.getenv("MD_MODE", "cached")
 MD_TIMEOUT = int(os.getenv("MD_TIMEOUT", "15"))
+CHAIN_PROVIDER = "marketdata" if MARKETDATA_API_TOKEN else "yfinance"
 
 CACHE_FILE_PATH = os.path.join(tempfile.gettempdir(), "options_cache_data.json")
 
@@ -213,27 +214,27 @@ HTML_CONTENT = """<!DOCTYPE html>
       <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-[10px]">
         <div>
           <label class="font-semibold text-slate-600 block mb-0.5">CSP Warn Buffer (%)</label>
-          <input id="critPutWarnPct" type="number" step="0.5" class="w-full border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
+          <input id="critPutWarnPct" type="number" step="0.5" class="w-full border rounded p-1.5 text-xs bg-white" onchange="saveAlertCriteria()">
         </div>
         <div>
           <label class="font-semibold text-slate-600 block mb-0.5">CSP Warn DTE (&le; days)</label>
-          <input id="critPutWarnDte" type="number" step="1" class="w-full border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
+          <input id="critPutWarnDte" type="number" step="1" class="w-full border rounded p-1.5 text-xs bg-white" onchange="saveAlertCriteria()">
         </div>
         <div>
           <label class="font-semibold text-slate-600 block mb-0.5">CSP Critical DTE (&le; days)</label>
-          <input id="critPutCritDte" type="number" step="1" class="w-full border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
+          <input id="critPutCritDte" type="number" step="1" class="w-full border rounded p-1.5 text-xs bg-white" onchange="saveAlertCriteria()">
         </div>
         <div>
           <label class="font-semibold text-slate-600 block mb-0.5">CC Tested Buffer (%)</label>
-          <input id="critCallWarnPct" type="number" step="0.5" class="w-full border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
+          <input id="critCallWarnPct" type="number" step="0.5" class="w-full border rounded p-1.5 text-xs bg-white" onchange="saveAlertCriteria()">
         </div>
         <div class="bg-amber-50/70 p-1.5 rounded border border-amber-200">
           <label class="font-bold text-amber-900 block mb-0.5">🔥 Put High Vol (%ile)</label>
-          <input id="critPutHighIvPctile" type="number" step="5" class="w-full border rounded p-1 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
+          <input id="critPutHighIvPctile" type="number" step="5" class="w-full border rounded p-1.5 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
         </div>
         <div class="bg-amber-50/70 p-1.5 rounded border border-amber-200">
           <label class="font-bold text-amber-900 block mb-0.5">🔥 Call High Vol (%ile)</label>
-          <input id="critCallHighIvPctile" type="number" step="5" class="w-full border rounded p-1 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
+          <input id="critCallHighIvPctile" type="number" step="5" class="w-full border rounded p-1.5 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
         </div>
         <!-- Alert Recipient Settings -->
         <div class="col-span-2 sm:col-span-3 mt-1 pt-2 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center gap-2">
@@ -703,7 +704,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       const fmt = (val) => `${val >= 0 ? '+$' : '-$'}${Math.abs(val).toFixed(2)}`;
 
-      // Render cards with individual ticker realized, current unrealized, and max unrealized metrics
+      // Render cards with individual ticker realized, current unrealized, and max unrealized MINIMALIST BAR CHARTS
       const allTickers = Object.keys(tickerStats).sort();
       if (allTickers.length === 0) summaryContainer.innerHTML = '<span class="text-slate-400 text-[10px]">No active or closed positions found.</span>';
       else {
@@ -711,32 +712,42 @@ HTML_CONTENT = """<!DOCTYPE html>
         allTickers.forEach(t => {
           const s = tickerStats[t];
           const card = document.createElement('div');
-          card.className = "bg-white border border-slate-200 rounded p-2 text-[10px] flex flex-wrap items-center gap-x-3 gap-y-1 shadow-xs";
+          card.className = "bg-white border border-slate-200 rounded-md p-2.5 flex flex-col gap-1.5 shadow-sm min-w-[160px] flex-1 sm:flex-none";
           
           let cspBadges = '';
           if (s.cspCapital > 0) {
             const parts = [];
             if (s.moomooCsp > 0) parts.push(`<span class="text-orange-700 font-bold">Moo: ${fmtCurrency(s.moomooCsp)}</span>`);
             if (s.ibkrCsp > 0) parts.push(`<span class="text-blue-700 font-bold">IB: ${fmtCurrency(s.ibkrCsp)}</span>`);
-            cspBadges = `<div class="bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded flex items-center gap-1 font-mono">${parts.join(' | ')}</div>`;
+            cspBadges = `<div class="bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded flex items-center justify-center gap-1 text-[9px] font-mono mt-1">${parts.join(' | ')}</div>`;
           }
 
-          const realColor = s.realizedPl >= 0 ? 'text-emerald-700 font-bold' : 'text-rose-700 font-bold';
-          const unrealColor = s.unrealizedPl >= 0 ? 'text-emerald-700 font-bold' : 'text-rose-700 font-bold';
-          const maxUnrealColor = s.maxUnrealizedPl >= 0 ? 'text-emerald-700 font-bold' : 'text-rose-700 font-bold';
+          const maxAbs = Math.max(Math.abs(s.realizedPl), Math.abs(s.unrealizedPl), Math.abs(s.maxUnrealizedPl)) || 1;
+          
+          const buildBar = (label, val) => {
+            const pct = Math.min((Math.abs(val) / maxAbs) * 100, 100);
+            const isPos = val >= 0;
+            const bgStr = isPos ? 'bg-emerald-200/60' : 'bg-rose-200/60';
+            const txtStr = isPos ? 'text-emerald-800' : 'text-rose-800';
+            return `
+              <div class="relative w-full bg-slate-50 border border-slate-100 rounded h-4 flex items-center px-1.5 overflow-hidden">
+                <div class="absolute left-0 top-0 h-full ${bgStr} transition-all duration-500" style="width: ${pct}%"></div>
+                <div class="relative z-10 w-full flex justify-between text-[9px] font-mono leading-none items-center">
+                  <span class="text-slate-500 font-semibold">${label}</span>
+                  <span class="font-bold ${txtStr}">${fmt(val)}</span>
+                </div>
+              </div>
+            `;
+          };
 
           card.innerHTML = `
-            <div class="flex items-center gap-1.5">
+            <div class="flex items-center justify-between mb-1">
               <span class="font-extrabold text-slate-800 text-[11px]">${t}</span>
-              <span class="text-[9px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-mono font-semibold">${s.total} Open (${s.puts}P / ${s.calls}C)</span>
+              <span class="text-[8.5px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-mono font-semibold">${s.total} Open (${s.puts}P / ${s.calls}C)</span>
             </div>
-            <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[9.5px]">
-              <span>Realized: <span class="${realColor}">${fmt(s.realizedPl)}</span></span>
-              <span class="text-slate-300">|</span>
-              <span>Cur Unreal: <span class="${unrealColor}">${fmt(s.unrealizedPl)}</span></span>
-              <span class="text-slate-300">|</span>
-              <span>Max Unreal: <span class="${maxUnrealColor}">${fmt(s.maxUnrealizedPl)}</span></span>
-            </div>
+            ${buildBar('Realized', s.realizedPl)}
+            ${buildBar('Cur Unreal', s.unrealizedPl)}
+            ${buildBar('Max Unreal', s.maxUnrealizedPl)}
             ${cspBadges}
           `;
           summaryContainer.appendChild(card);
