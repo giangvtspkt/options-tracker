@@ -35,6 +35,57 @@ MD_TIMEOUT = int(os.getenv("MD_TIMEOUT", "15"))
 
 CACHE_FILE_PATH = os.path.join(tempfile.gettempdir(), "options_cache_data.json")
 
+# --- Dynamic Proxy Pool Manager ---
+PROXY_POOL = [
+    "http://ehgblhyh:orsh04zky31o@31.59.20.176:6754",
+    "http://ehgblhyh:orsh04zky31o@45.38.107.97:6014",
+    "http://ehgblhyh:orsh04zky31o@64.137.96.74:6641",
+    "http://ehgblhyh:orsh04zky31o@198.23.243.226:6361",
+    "http://ehgblhyh:orsh04zky31o@38.154.185.97:6370",
+    "http://ehgblhyh:orsh04zky31o@84.247.60.125:6095",
+    "http://ehgblhyh:orsh04zky31o@142.111.67.146:5611",
+    "http://ehgblhyh:orsh04zky31o@191.96.254.138:6185",
+    "http://ehgblhyh:orsh04zky31o@31.58.9.4:6077",
+    "http://ehgblhyh:orsh04zky31o@198.46.161.42:5092"
+]
+
+current_working_proxy = None
+
+def get_working_yf_session():
+    """Scans the proxy pool and returns a verified requests.Session for yfinance."""
+    global current_working_proxy
+    
+    def create_session(p_url):
+        s = requests.Session()
+        s.proxies.update({"http": p_url, "https": p_url})
+        s.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
+        return s
+
+    def test_proxy(p_url):
+        try:
+            s = create_session(p_url)
+            # A lightweight ping to verify Yahoo Finance isn't returning a 403/429 block
+            r = s.get("https://query2.finance.yahoo.com/v8/finance/chart/SPY?interval=1d&range=1d", timeout=3.0)
+            if r.status_code == 200:
+                return True
+        except Exception:
+            pass
+        return False
+
+    # 1. Fast path: check if our last known proxy is still working
+    if current_working_proxy and test_proxy(current_working_proxy):
+        return create_session(current_working_proxy)
+
+    # 2. Slow path: last proxy died, scan the pool for a fresh one
+    for p in PROXY_POOL:
+        if test_proxy(p):
+            current_working_proxy = p  # Memorize it for next time
+            return create_session(p)
+            
+    # 3. Critical failure: All proxies blocked or dead
+    current_working_proxy = None
+    return None
+
 def norm_cdf(x):
     return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
 
@@ -1456,18 +1507,13 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
     live_positions = cache_store.get("live_positions", {}).copy()
     diagnostics = {}
     
+    # --- PROXY MANAGER: Find a working proxy ---
+    yf_session = get_working_yf_session()
+    
+    if yf_session is None and provider == "yfinance":
+        diagnostics["Proxy Firewall"] = "All 10 proxies are dead or blocked. Falling back to cached data."
+        
     successful_fetches = 0
-
-    # --- WEBSHARE PROXY SESSION SETUP ---
-    yf_session = requests.Session()
-    proxy_url = "http://ehgblhyh:orsh04zky31o@31.58.9.4:6077"
-    yf_session.proxies.update({
-        "http": proxy_url,
-        "https": proxy_url
-    })
-    yf_session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    })
 
     for ticker in combined_ticker_list:
         is_primary = ticker in primary_tickers
@@ -1475,10 +1521,14 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
         expirations = []
         df_hist = None
         hist_vols = []
-
-        tkr = yf.Ticker(ticker, session=yf_session)
         
         use_md = (provider == "marketdata")
+        
+        if not use_md and yf_session is None:
+            # Skip fetching if we rely on yfinance but have no working proxy
+            continue
+
+        tkr = yf.Ticker(ticker, session=yf_session) if yf_session else yf.Ticker(ticker)
         
         # --- ISOLATED SPOT FETCH ---
         if use_md:
