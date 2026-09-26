@@ -347,7 +347,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold">
           <tr>
             <th class="p-1.5 border-r p-0">
-               <select id="posBrokerFilter" onchange="renderPositionsAndPL()" class="w-full bg-transparent font-bold text-slate-600 outline-none cursor-pointer px-1 py-1">
+               <select id="posBrokerFilter" onchange="renderPositionsAndPL()" class="w-full bg-transparent font-bold text-slate-600 outline-none cursor-pointer px-1 py-1 text-center">
                  <option value="ALL">Broker (All)</option>
                </select>
             </th>
@@ -357,8 +357,8 @@ HTML_CONTENT = """<!DOCTYPE html>
                  <option value="ALL">Contract (All)</option>
                </select>
             </th>
-            <th class="p-1.5 border-r">Trade Day</th>
-            <th class="p-1.5 border-r">Exp</th>
+            <th class="p-1.5 border-r text-center">Trade Day</th>
+            <th class="p-1.5 border-r text-center">Exp</th>
             <th class="p-1.5 border-r">Entry</th>
             <th class="p-1.5 border-r">Live Mark</th>
             <th class="p-1.5 border-r font-extrabold text-blue-900 bg-blue-50/70">Cur P/L ($)</th>
@@ -563,18 +563,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (res.ok) { toggleAddForm(); await loadCloudPositions(); fetchData(false); }
     }
 
-    async function updatePositionField(id, field, value) {
-      const pos = cloudPositions.find(p => p.id === id);
-      if (!pos) return;
-      if (field === 'strike' || field === 'prem') pos[field] = parseFloat(value) || 0;
-      else if (field === 'qty') pos[field] = parseInt(value) || 1;
-      else pos[field] = value;
-      if (!pos.broker) pos.broker = 'moomoo';
-
-      const res = await fetch(`/api/positions/${id}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(pos) });
-      if (res.ok && (field === 'exp' || field === 'ticker' || field === 'strike')) fetchData(true);
-    }
-
     async function deletePosition(id) {
       if (!confirm("Delete?")) return;
       if ((await fetch(`/api/positions/${id}`, { method: 'DELETE' })).ok) loadCloudPositions();
@@ -730,44 +718,32 @@ HTML_CONTENT = """<!DOCTYPE html>
 
           const localMaxAbs = Math.max(Math.abs(s.realizedPl), Math.abs(s.unrealizedPl), Math.abs(s.maxUnrealizedPl)) || 1;
           
-          const buildBar = (label, val, useGlobalColor = false) => {
-            const pct = Math.min((Math.abs(val) / localMaxAbs) * 100, 100);
+          const buildBar = (label, val, scaleMax) => {
+            const pct = Math.min((Math.abs(val) / scaleMax) * 100, 100);
             const isPos = val >= 0;
+            const bgClass = isPos ? 'bg-emerald-200/80' : 'bg-rose-200/80';
+            const txtStr = isPos ? 'text-emerald-900' : 'text-rose-900';
             
-            let bgStyle = '';
-            let bgClass = 'transition-all duration-500';
-            
-            if (useGlobalColor) {
-              // Scale the color opacity based on how large this ticker's Max Unrealized is vs the Global Max
-              const intensity = Math.abs(val) / globalMaxUnrealAbs;
-              const alpha = 0.15 + (0.7 * intensity); // Scales between 0.15 and 0.85 opacity
-              const rgb = isPos ? '5, 150, 105' : '225, 29, 72'; // Emerald / Rose rgb values
-              bgStyle = `background-color: rgba(${rgb}, ${alpha});`;
-            } else {
-              bgClass += isPos ? ' bg-emerald-200/60' : ' bg-rose-200/60';
-            }
-
-            const txtStr = isPos ? 'text-emerald-800' : 'text-rose-800';
             return `
-              <div class="relative w-full bg-slate-50 border border-slate-100 rounded h-4 flex items-center px-1.5 overflow-hidden">
-                <div class="absolute left-0 top-0 h-full ${bgClass}" style="width: ${pct}%; ${bgStyle}"></div>
+              <div class="relative w-full bg-slate-100 border border-slate-200 rounded h-4 flex items-center px-1.5 overflow-hidden">
+                <div class="absolute left-0 top-0 h-full ${bgClass} transition-all duration-500" style="width: ${pct}%;"></div>
                 <div class="relative z-10 w-full flex justify-between text-[9px] font-mono leading-none items-center">
-                  <span class="text-slate-500 font-semibold">${label}</span>
+                  <span class="text-slate-600 font-semibold">${label}</span>
                   <span class="font-bold ${txtStr}">${fmt(val)}</span>
                 </div>
               </div>
             `;
           };
 
-          // The third bar (Max Unreal) receives true for useGlobalColor
+          // Scale Max Unrealized against the Global Maximum to compare risk across tickers visually
           card.innerHTML = `
             <div class="flex items-center justify-between mb-1">
               <span class="font-extrabold text-slate-800 text-[11px]">${t}</span>
               <span class="text-[8.5px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-mono font-semibold">${s.total} Open (${s.puts}P / ${s.calls}C)</span>
             </div>
-            ${buildBar('Realized', s.realizedPl, false)}
-            ${buildBar('Cur Unreal', s.unrealizedPl, false)}
-            ${buildBar('Max Unreal', s.maxUnrealizedPl, true)}
+            ${buildBar('Realized', s.realizedPl, localMaxAbs)}
+            ${buildBar('Cur Unreal', s.unrealizedPl, localMaxAbs)}
+            ${buildBar('Max Unreal', s.maxUnrealizedPl, globalMaxUnrealAbs)}
             ${cspBadges}
           `;
           summaryContainer.appendChild(card);
@@ -788,6 +764,14 @@ HTML_CONTENT = """<!DOCTYPE html>
       else tbody.innerHTML = '';
 
       const posColorMap = {};
+      
+      const shortDate = (dStr) => {
+        if (!dStr) return '-';
+        const parts = dStr.split('-');
+        if (parts.length === 3) return `${parts[1]}/${parts[2]}/${parts[0].slice(2)}`;
+        return dStr;
+      };
+
       visiblePositions.forEach(p => {
         const isExpired = p.exp < todayStr;
         const spot = (globalData && globalData.all_spots && globalData.all_spots[p.ticker] !== undefined) ? globalData.all_spots[p.ticker] : null;
@@ -911,15 +895,16 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         const actionBadge = p.action === 'SELL' ? '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">SELL</span>' : '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">BUY</span>';
         const curBroker = (p.broker || 'moomoo').toLowerCase();
+        const brokerBadge = curBroker === 'moomoo' ? '<span class="text-orange-600 font-bold">MOO</span>' : '<span class="text-blue-700 font-bold">IBKR</span>';
 
         const tr = document.createElement('tr');
         tr.className = `border-b ${getExpColor(p.exp, posColorMap)}`;
         tr.innerHTML = `
-          <td class="p-1 border-r whitespace-nowrap"><select onchange="updatePositionField(${p.id}, 'broker', this.value)" class="border rounded px-1 py-0.5 bg-white font-bold text-[9px] ${curBroker === 'moomoo' ? 'text-orange-600 border-orange-200' : 'text-blue-700 border-blue-200'}"><option value="moomoo" ${curBroker === 'moomoo' ? 'selected' : ''}>MOOMOO</option><option value="ibkr" ${curBroker === 'ibkr' ? 'selected' : ''}>IBKR</option></select></td>
+          <td class="p-1.5 border-r whitespace-nowrap text-[9px] text-center">${brokerBadge}</td>
           <td class="p-1.5 border-r whitespace-nowrap">${actionBadge}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-bold">${p.ticker} $${p.strike} ${p.type} (x${p.qty})</td>
-          <td class="p-1 border-r whitespace-nowrap"><input type="date" value="${p.trade_date || ''}" onchange="updatePositionField(${p.id}, 'trade_date', this.value)" class="border rounded px-1 py-0.5 bg-white font-mono text-[9px] text-slate-700"></td>
-          <td class="p-1 border-r whitespace-nowrap"><input type="date" value="${p.exp || ''}" onchange="updatePositionField(${p.id}, 'exp', this.value)" class="border rounded px-1 py-0.5 bg-white font-mono text-[9px] font-bold text-slate-700"></td>
+          <td class="p-1.5 border-r whitespace-nowrap font-mono text-[9px] text-slate-600 text-center">${shortDate(p.trade_date)}</td>
+          <td class="p-1.5 border-r whitespace-nowrap font-mono text-[9px] font-bold text-slate-800 text-center">${shortDate(p.exp)}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
           <td class="p-1.5 border-r whitespace-nowrap">${markDisplay}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono font-extrabold bg-blue-50/40 ${curPlColor}">${curPlDisplay}</td>
