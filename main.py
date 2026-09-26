@@ -241,7 +241,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             <input type="checkbox" id="critWaEnabled" onchange="saveAlertCriteria()">
             <span>Enable Twilio Alerts</span>
           </label>
-          <input id="critWaNumber" type="text" placeholder="Format: +1234567890 (SMS) or whatsapp:+1234567890" class="w-full sm:w-80 border rounded p-1 text-xs bg-white font-mono" onchange="saveAlertCriteria()" onblur="saveAlertCriteria()">
+          <input id="critWaNumber" type="text" placeholder="Format: +1234567890 (SMS) or whatsapp:+1234567890" class="w-full sm:w-80 border rounded p-1.5 text-xs bg-white font-mono" onchange="saveAlertCriteria()" onblur="saveAlertCriteria()">
           <span class="text-[9px] text-slate-400">1-hour cooldown per ticker to prevent spam.</span>
         </div>
       </div>
@@ -376,16 +376,18 @@ HTML_CONTENT = """<!DOCTYPE html>
 
   <!-- 2. Tickers & Delta Box -->
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
-    <div class="flex items-center justify-between mb-2 pb-2 border-b border-slate-100">
-      <span class="text-[11px] font-bold text-slate-700 uppercase tracking-wide">⚙️ Dashboard Controls</span>
-      <div id="fearGreedBadge" class="hidden items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold border shadow-xs transition-all">
-        <span id="fgIcon"></span><span id="fgText"></span>
+    <div class="flex items-center justify-between mb-3 pb-3 border-b border-slate-100">
+      <span class="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+        <span>⚙️</span> Dashboard Controls
+      </span>
+      <div id="fearGreedBadge" class="hidden items-center gap-2 px-3 py-1.5 rounded-lg text-xs sm:text-sm font-extrabold border-2 shadow-md transition-all">
+        <span id="fgIcon" class="text-base sm:text-lg"></span><span id="fgText" class="tracking-wide"></span>
       </div>
     </div>
     <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-2">
       <div>
         <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Tickers</label>
-        <input id="tickers" type="text" value="IREN, RKLB" class="w-full border rounded p-2 text-sm uppercase font-semibold">
+        <input id="tickers" type="text" value="IREN, RKLB, AMD" class="w-full border rounded p-2 text-sm uppercase font-semibold">
       </div>
       <div>
         <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Delta</label>
@@ -983,7 +985,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           else if (rating === 'greed') { bg = 'bg-emerald-100 border-emerald-300 text-emerald-800'; icon = '😏'; }
           else if (rating === 'extreme greed') { bg = 'bg-green-200 border-green-400 text-green-900'; icon = '🤑'; }
           
-          badge.className = `items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold shadow-sm border ${bg} flex transition-all`;
+          badge.className = `items-center gap-2 px-3 py-1.5 rounded-lg text-xs sm:text-sm font-extrabold shadow-md border-2 ${bg} flex transition-all`;
           document.getElementById('fgIcon').innerText = icon;
           document.getElementById('fgText').innerText = `Fear & Greed: ${score} (${data.rating})`;
         }
@@ -998,7 +1000,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       const deltaInput = document.getElementById('delta').value;
       const providerInput = document.getElementById('providerSelect').value;
       
-      const tickers = tickersInput || "IREN,RKLB";
+      const tickers = tickersInput || "IREN, RKLB, AMD";
       const delta = deltaInput || "0.2";
       
       localStorage.setItem('savedTickers', tickers);
@@ -1430,7 +1432,7 @@ def _native_delta(row, bs_delta):
     return bs_delta
 
 @app.get("/api/data")
-def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", delta: float = 0.2, provider: str = "marketdata"):
+def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "", delta: float = 0.2, provider: str = "marketdata"):
     positions, _ = get_positions_from_github()
     cache_store = load_cached_data()
     
