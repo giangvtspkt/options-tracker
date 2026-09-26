@@ -346,7 +346,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       <table class="w-full text-left text-[10px]">
         <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold">
           <tr>
-            <th class="p-1.5 border-r p-0">
+            <th class="p-1.5 border-r p-0 text-center">
                <select id="posBrokerFilter" onchange="renderPositionsAndPL()" class="w-full bg-transparent font-bold text-slate-600 outline-none cursor-pointer px-1 py-1 text-center">
                  <option value="ALL">Broker (All)</option>
                </select>
@@ -376,6 +376,12 @@ HTML_CONTENT = """<!DOCTYPE html>
 
   <!-- 2. Tickers & Delta Box -->
   <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
+    <div class="flex items-center justify-between mb-2 pb-2 border-b border-slate-100">
+      <span class="text-[11px] font-bold text-slate-700 uppercase tracking-wide">⚙️ Dashboard Controls</span>
+      <div id="fearGreedBadge" class="hidden items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold border shadow-xs transition-all">
+        <span id="fgIcon"></span><span id="fgText"></span>
+      </div>
+    </div>
     <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-2">
       <div>
         <label class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Tickers</label>
@@ -958,6 +964,32 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
     }
 
+    async function fetchFearGreed() {
+      try {
+        const res = await fetch('/api/feargreed');
+        const data = await res.json();
+        const badge = document.getElementById('fearGreedBadge');
+        if (data.status === 'success' && data.score !== undefined) {
+          badge.classList.remove('hidden');
+          badge.classList.add('flex');
+          const score = Math.round(data.score);
+          const rating = data.rating ? data.rating.toLowerCase() : '';
+          
+          let bg = 'bg-slate-100 border-slate-300 text-slate-700';
+          let icon = '⚪';
+          if (rating === 'extreme fear') { bg = 'bg-rose-100 border-rose-300 text-rose-800'; icon = '😨'; }
+          else if (rating === 'fear') { bg = 'bg-orange-100 border-orange-300 text-orange-800'; icon = '😟'; }
+          else if (rating === 'neutral') { bg = 'bg-slate-100 border-slate-300 text-slate-800'; icon = '😐'; }
+          else if (rating === 'greed') { bg = 'bg-emerald-100 border-emerald-300 text-emerald-800'; icon = '😏'; }
+          else if (rating === 'extreme greed') { bg = 'bg-green-200 border-green-400 text-green-900'; icon = '🤑'; }
+          
+          badge.className = `items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold shadow-sm border ${bg} flex transition-all`;
+          document.getElementById('fgIcon').innerText = icon;
+          document.getElementById('fgText').innerText = `Fear & Greed: ${score} (${data.rating})`;
+        }
+      } catch (e) {}
+    }
+
     async function fetchData(isSilent = false) {
       const btn = document.getElementById('refreshBtn'), spinner = document.getElementById('btnSpinner'), status = document.getElementById('status');
       if (!hasLoadedOnce || !isSilent) { btn.disabled = true; spinner.classList.remove('hidden'); document.getElementById('btnText').innerText = "Loading..."; }
@@ -976,6 +1008,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       const contractTickers = Array.from(new Set(cloudPositions.map(p => (p.ticker || '').trim().toUpperCase()))).filter(Boolean);
 
       try {
+        fetchFearGreed(); // Fetch sentiment concurrently
         const res = await fetch(`/api/data?tickers=${encodeURIComponent(tickers)}&contract_tickers=${encodeURIComponent(contractTickers.join(','))}&delta=${delta}&provider=${providerInput}`);
         if (!res.ok) throw new Error("API error");
         const data = await res.json();
@@ -1228,6 +1261,22 @@ def remove_position(pos_id: int):
     positions = [p for p in positions if p.get("id") != pos_id]
     save_positions_to_github(positions)
     return {"status": "success"}
+
+@app.get("/api/feargreed")
+def get_fear_greed():
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json'
+        }
+        r = requests.get("https://production.dataviz.cnn.io/index/fearandgreed/graphdata", headers=headers, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            fng = data.get("fear_and_greed", {})
+            return {"status": "success", "score": fng.get("score"), "rating": fng.get("rating")}
+        return {"status": "error"}
+    except Exception:
+        return {"status": "error"}
 
 # --- Twilio Alert Endpoint (SMS & WhatsApp Ready) ---
 @app.post("/api/whatsapp")
