@@ -32,6 +32,7 @@ MARKETDATA_API_TOKEN = os.getenv("MARKETDATA_API_TOKEN", "")
 MD_BASE = "https://api.marketdata.app/v1"
 MD_MODE = os.getenv("MD_MODE", "cached")
 MD_TIMEOUT = int(os.getenv("MD_TIMEOUT", "15"))
+CHAIN_PROVIDER = "marketdata" if MARKETDATA_API_TOKEN else "yfinance"
 
 CACHE_FILE_PATH = os.path.join(tempfile.gettempdir(), "options_cache_data.json")
 
@@ -177,7 +178,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           <span>Hide Expired</span>
         </label>
         <button onclick="toggleAlertSettings()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold px-2 py-0.5 rounded border border-slate-200 flex items-center gap-1">
-          <span>⚙</span> Alert Criteria
+          <span>⚙</span> Settings
         </button>
       </div>
       <button onclick="toggleAddForm()" id="toggleFormBtn" class="bg-slate-800 text-white text-[10px] font-bold px-2.5 py-1 rounded-md">
@@ -185,13 +186,30 @@ HTML_CONTENT = """<!DOCTYPE html>
       </button>
     </div>
 
-    <!-- Collapsible Alert Criteria Configuration Panel -->
+    <!-- Collapsible Settings Panel -->
     <div id="alertSettingsPanel" class="hidden bg-slate-50 border border-slate-200 rounded-lg p-2.5 mb-3">
-      <div class="flex items-center justify-between mb-2">
-        <span class="font-bold text-[11px] text-slate-700">⚙ Custom Rolling &amp; IV Percentile Alert Thresholds</span>
+      <div class="flex items-center justify-between mb-2 border-b border-slate-200 pb-2">
+        <span class="font-bold text-[11px] text-slate-700">⏱️ Auto-Refresh Trading Hours (Local Time)</span>
         <button onclick="resetAlertCriteria()" class="text-[10px] bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold px-2 py-0.5 rounded border border-rose-200">
-          ↺ Reset to Defaults
+          ↺ Reset
         </button>
+      </div>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-[10px] mb-3">
+        <div>
+          <label class="font-semibold text-slate-600 block mb-0.5">Market Open Time</label>
+          <input id="critRefreshStart" type="time" class="w-full border rounded p-1.5 text-xs bg-white font-mono" onchange="saveAlertCriteria()">
+        </div>
+        <div>
+          <label class="font-semibold text-slate-600 block mb-0.5">Market Close Time</label>
+          <input id="critRefreshEnd" type="time" class="w-full border rounded p-1.5 text-xs bg-white font-mono" onchange="saveAlertCriteria()">
+        </div>
+        <div class="col-span-2 text-slate-500 flex items-center px-1">
+          Auto-refresh will only fire if your current clock falls between these two times.
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between mb-2 border-t border-slate-200 pt-2">
+        <span class="font-bold text-[11px] text-slate-700">⚙ Custom Rolling &amp; IV Percentile Alerts</span>
       </div>
       <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-[10px]">
         <div>
@@ -442,7 +460,8 @@ HTML_CONTENT = """<!DOCTYPE html>
     const DEFAULT_ALERT_CRITERIA = {
       putWarnPct: 3.0, putWarnDte: 10, putCritDte: 5,
       callWarnPct: 2.0, putHighIvPctile: 85.0, callHighIvPctile: 80.0,
-      waEnabled: false, waNumber: ""
+      waEnabled: false, waNumber: "",
+      refreshStart: "20:30", refreshEnd: "03:00"
     };
 
     let alertCriteria = { ...DEFAULT_ALERT_CRITERIA };
@@ -460,6 +479,9 @@ HTML_CONTENT = """<!DOCTYPE html>
       document.getElementById('critCallHighIvPctile').value = alertCriteria.callHighIvPctile;
       document.getElementById('critWaEnabled').checked = alertCriteria.waEnabled;
       document.getElementById('critWaNumber').value = alertCriteria.waNumber;
+      
+      document.getElementById('critRefreshStart').value = alertCriteria.refreshStart;
+      document.getElementById('critRefreshEnd').value = alertCriteria.refreshEnd;
     }
 
     function saveAlertCriteria() {
@@ -470,8 +492,10 @@ HTML_CONTENT = """<!DOCTYPE html>
       alertCriteria.putHighIvPctile = parseFloat(document.getElementById('critPutHighIvPctile').value) || 85.0;
       alertCriteria.callHighIvPctile = parseFloat(document.getElementById('critCallHighIvPctile').value) || 80.0;
       alertCriteria.waEnabled = document.getElementById('critWaEnabled').checked;
-      
       alertCriteria.waNumber = document.getElementById('critWaNumber').value.trim();
+      
+      alertCriteria.refreshStart = document.getElementById('critRefreshStart').value || "20:30";
+      alertCriteria.refreshEnd = document.getElementById('critRefreshEnd').value || "03:00";
       
       localStorage.setItem('alertCriteria', JSON.stringify(alertCriteria));
       renderPositionsAndPL();
@@ -872,16 +896,57 @@ HTML_CONTENT = """<!DOCTYPE html>
         const res = await fetch(`/api/data?tickers=${encodeURIComponent(tickers)}&contract_tickers=${encodeURIComponent(contractTickers.join(','))}&delta=${delta}&provider=${providerInput}`);
         if (!res.ok) throw new Error("API error");
         const data = await res.json();
+        
+        // --- ABNORMAL DATA FIREWALL ---
+        if (isSilent) {
+            let populatedContracts = 0;
+            if (data.targets && data.puts) {
+                data.targets.forEach(tgt => {
+                    const dict = data.puts[tgt] || {};
+                    Object.keys(dict).forEach(k => { if (dict[k].strike) populatedContracts++; });
+                });
+            }
+            // Reject the auto-refresh if it fell back to cache, or zero contracts were populated
+            if (data.is_cached || populatedContracts === 0) {
+                status.innerHTML = `<span class="text-amber-600 font-bold">⚠️ Auto-refresh skipped (Abnormal/Empty Data)</span> at ${new Date().toLocaleTimeString()}`;
+                return; 
+            }
+        }
+        
         localStorage.setItem('cached_options_payload', JSON.stringify(data));
         applyDataPayload(data);
         hasLoadedOnce = true;
         status.innerHTML = `<span class="text-emerald-600 font-bold">✓ Live Updated</span> at ${new Date().toLocaleTimeString()}`;
       } catch (err) {
         const localSaved = localStorage.getItem('cached_options_payload');
-        if (localSaved) { applyDataPayload(JSON.parse(localSaved)); hasLoadedOnce = true; status.innerHTML = `<span class="text-amber-600 font-bold">⚠️ Using Backup Cache</span>`; return; }
-        status.innerHTML = `<span class="text-rose-600 font-bold">✕ Unreachable.</span>`;
+        if (localSaved && !isSilent) { applyDataPayload(JSON.parse(localSaved)); hasLoadedOnce = true; status.innerHTML = `<span class="text-amber-600 font-bold">⚠️ Using Backup Cache</span>`; return; }
+        if (!isSilent) status.innerHTML = `<span class="text-rose-600 font-bold">✕ Unreachable.</span>`;
       } finally {
         btn.disabled = false; spinner.classList.add('hidden'); document.getElementById('btnText').innerText = "Refresh Data";
+      }
+    }
+
+    function checkAutoRefresh() {
+      const start = alertCriteria.refreshStart || '20:30';
+      const end = alertCriteria.refreshEnd || '03:00';
+      
+      const now = new Date();
+      const current = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+      
+      let isOpen = false;
+      if (start <= end) {
+        isOpen = (current >= start && current <= end);
+      } else {
+        isOpen = (current >= start || current <= end);
+      }
+      
+      if (isOpen) {
+        fetchData(true);
+      } else {
+        const statusEl = document.getElementById('status');
+        if (statusEl && hasLoadedOnce) {
+          statusEl.innerHTML = `<span class="text-slate-500 font-medium">⏸️ Market Closed (Auto-refresh paused)</span>`;
+        }
       }
     }
 
@@ -1007,7 +1072,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       loadAlertCriteria();
       await loadCloudPositions();
       await fetchData(false);
-      setInterval(() => fetchData(true), 60000);
+      setInterval(checkAutoRefresh, 60000);
     })();
   </script>
 </body>
