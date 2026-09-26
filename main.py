@@ -214,27 +214,27 @@ HTML_CONTENT = """<!DOCTYPE html>
       <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-[10px]">
         <div>
           <label class="font-semibold text-slate-600 block mb-0.5">CSP Warn Buffer (%)</label>
-          <input id="critPutWarnPct" type="number" step="0.5" class="w-full border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
+          <input id="critPutWarnPct" type="number" step="0.5" class="w-full border rounded p-1.5 text-xs bg-white" onchange="saveAlertCriteria()">
         </div>
         <div>
           <label class="font-semibold text-slate-600 block mb-0.5">CSP Warn DTE (&le; days)</label>
-          <input id="critPutWarnDte" type="number" step="1" class="w-full border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
+          <input id="critPutWarnDte" type="number" step="1" class="w-full border rounded p-1.5 text-xs bg-white" onchange="saveAlertCriteria()">
         </div>
         <div>
           <label class="font-semibold text-slate-600 block mb-0.5">CSP Critical DTE (&le; days)</label>
-          <input id="critPutCritDte" type="number" step="1" class="w-full border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
+          <input id="critPutCritDte" type="number" step="1" class="w-full border rounded p-1.5 text-xs bg-white" onchange="saveAlertCriteria()">
         </div>
         <div>
           <label class="font-semibold text-slate-600 block mb-0.5">CC Tested Buffer (%)</label>
-          <input id="critCallWarnPct" type="number" step="0.5" class="w-full border rounded p-1 text-xs bg-white" onchange="saveAlertCriteria()">
+          <input id="critCallWarnPct" type="number" step="0.5" class="w-full border rounded p-1.5 text-xs bg-white" onchange="saveAlertCriteria()">
         </div>
         <div class="bg-amber-50/70 p-1.5 rounded border border-amber-200">
           <label class="font-bold text-amber-900 block mb-0.5">🔥 Put High Vol (%ile)</label>
-          <input id="critPutHighIvPctile" type="number" step="5" class="w-full border rounded p-1 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
+          <input id="critPutHighIvPctile" type="number" step="5" class="w-full border rounded p-1.5 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
         </div>
         <div class="bg-amber-50/70 p-1.5 rounded border border-amber-200">
           <label class="font-bold text-amber-900 block mb-0.5">🔥 Call High Vol (%ile)</label>
-          <input id="critCallHighIvPctile" type="number" step="5" class="w-full border rounded p-1 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
+          <input id="critCallHighIvPctile" type="number" step="5" class="w-full border rounded p-1.5 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
         </div>
         <!-- Alert Recipient Settings -->
         <div class="col-span-2 sm:col-span-3 mt-1 pt-2 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center gap-2">
@@ -276,11 +276,11 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Open Contracts & CSP Capital Summary -->
+    <!-- Ticker Performance (P/L) & CSP Capital Summary -->
     <div class="bg-slate-50 border border-slate-200 rounded-lg p-2.5 mb-3">
       <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
         <div class="flex items-center gap-2">
-          <span class="text-[11px] font-bold text-slate-700">📊 Open Contracts &amp; CSP Capital Requirement</span>
+          <span class="text-[11px] font-bold text-slate-700">📊 Ticker Performance (P/L) &amp; CSP Capital Requirement</span>
           <span id="totalOpenQty" class="text-[10px] font-semibold text-slate-500 bg-slate-200/70 px-1.5 py-0.5 rounded">Total Open: 0</span>
         </div>
         <div class="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
@@ -480,8 +480,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       document.getElementById('critWaEnabled').checked = alertCriteria.waEnabled;
       document.getElementById('critWaNumber').value = alertCriteria.waNumber;
       
-      document.getElementById('critRefreshStart').value = alertCriteria.refreshStart;
-      document.getElementById('critRefreshEnd').value = alertCriteria.refreshEnd;
+      document.getElementById('critRefreshStart').value = alertCriteria.refreshStart || "20:30";
+      document.getElementById('critRefreshEnd').value = alertCriteria.refreshEnd || "03:00";
     }
 
     function saveAlertCriteria() {
@@ -599,17 +599,37 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       let totalRealized = 0, thisMonthRealized = 0, lastMonthRealized = 0;
       let totalMaxUnrealized = 0, totalCurrentUnrealized = 0, thisMonthCurrentUnrealized = 0;
-      const openStats = {};
       let totalOpenCount = 0, totalCspCapital = 0, moomooCspCapital = 0, ibkrCspCapital = 0;
 
+      // Accumulator for per-ticker performance metrics
+      const tickerStats = {};
+      const initTicker = (tkr) => {
+        if (!tickerStats[tkr]) {
+          tickerStats[tkr] = {
+            total: 0,
+            puts: 0,
+            calls: 0,
+            cspCapital: 0,
+            moomooCsp: 0,
+            ibkrCsp: 0,
+            realizedPl: 0,
+            unrealizedPl: 0
+          };
+        }
+      };
+
       cloudPositions.forEach(p => {
+        const tkr = (p.ticker || '').trim().toUpperCase();
+        if (!tkr) return;
+        initTicker(tkr);
+
         const parts = (p.exp || '').split('-');
         const isExpired = p.exp < todayStr;
         const isThisMonth = (parseInt(parts[0], 10) === currentYear && parseInt(parts[1], 10) - 1 === currentMonth);
         const isLastMonth = (parseInt(parts[0], 10) === lastMonthYear && parseInt(parts[1], 10) - 1 === lastMonth);
 
-        const spot = (globalData && globalData.all_spots && globalData.all_spots[p.ticker] !== undefined) ? globalData.all_spots[p.ticker] : null;
-        const liveMark = (globalData && globalData.live_positions && globalData.live_positions[`${p.ticker.trim().toUpperCase()}_${p.exp.trim()}_${parseFloat(p.strike).toFixed(2)}_${p.type.trim().toUpperCase()}`]) || null;
+        const spot = (globalData && globalData.all_spots && globalData.all_spots[tkr] !== undefined) ? globalData.all_spots[tkr] : null;
+        const liveMark = (globalData && globalData.live_positions && globalData.live_positions[`${tkr}_${(p.exp || '').trim()}_${parseFloat(p.strike).toFixed(2)}_${(p.type || '').trim().toUpperCase()}`]) || null;
 
         if (isExpired) {
           let closedPl = 0;
@@ -626,29 +646,34 @@ HTML_CONTENT = """<!DOCTYPE html>
             closedPl = ((p.type === 'CALL' ? Math.max((spot || 0) - p.strike, 0) : Math.max(p.strike - (spot || 0), 0)) - p.prem) * 100 * p.qty;
           }
           totalRealized += closedPl;
+          tickerStats[tkr].realizedPl += closedPl;
           if (isThisMonth) thisMonthRealized += closedPl;
           if (isLastMonth) lastMonthRealized += closedPl;
         } else {
           totalOpenCount += p.qty;
           const broker = (p.broker || 'moomoo').toLowerCase();
-          if (!openStats[p.ticker]) openStats[p.ticker] = { total: 0, puts: 0, calls: 0, cspCapital: 0, moomooCsp: 0, ibkrCsp: 0 };
-          openStats[p.ticker].total += p.qty;
+          
+          tickerStats[tkr].total += p.qty;
 
           if (p.type === 'PUT') {
-            openStats[p.ticker].puts += p.qty;
+            tickerStats[tkr].puts += p.qty;
             const cap = p.strike * 100 * p.qty;
-            openStats[p.ticker].cspCapital += cap;
+            tickerStats[tkr].cspCapital += cap;
             totalCspCapital += cap;
-            if (broker === 'moomoo') { moomooCspCapital += cap; openStats[p.ticker].moomooCsp += cap; }
-            else if (broker === 'ibkr') { ibkrCspCapital += cap; openStats[p.ticker].ibkrCsp += cap; }
-          } else if (p.type === 'CALL') openStats[p.ticker].calls += p.qty;
+            if (broker === 'moomoo') { moomooCspCapital += cap; tickerStats[tkr].moomooCsp += cap; }
+            else if (broker === 'ibkr') { ibkrCspCapital += cap; tickerStats[tkr].ibkrCsp += cap; }
+          } else if (p.type === 'CALL') {
+            tickerStats[tkr].calls += p.qty;
+          }
 
           const maxPl = (p.action === 'SELL') ? (p.prem * 100 * p.qty) : (-p.prem * 100 * p.qty);
           totalMaxUnrealized += maxPl;
           if (isThisMonth) thisMonthCurrentUnrealized += maxPl;
 
           if (liveMark !== null) {
-            totalCurrentUnrealized += (p.action === 'SELL') ? (p.prem - liveMark) * 100 * p.qty : (liveMark - p.prem) * 100 * p.qty;
+            const curPl = (p.action === 'SELL') ? (p.prem - liveMark) * 100 * p.qty : (liveMark - p.prem) * 100 * p.qty;
+            totalCurrentUnrealized += curPl;
+            tickerStats[tkr].unrealizedPl += curPl;
           }
         }
       });
@@ -660,13 +685,18 @@ HTML_CONTENT = """<!DOCTYPE html>
       document.getElementById('ibkrCspCapital').innerText = `IBKR CSP: ${fmtCurrency(ibkrCspCapital)}`;
       document.getElementById('totalCspCapital').innerText = `Total CSP: ${fmtCurrency(totalCspCapital)}`;
 
-      const openTickers = Object.keys(openStats);
-      if (openTickers.length === 0) summaryContainer.innerHTML = '<span class="text-slate-400 text-[10px]">No active open contracts.</span>';
+      const fmt = (val) => `${val >= 0 ? '+$' : '-$'}${Math.abs(val).toFixed(2)}`;
+
+      // Render cards with individual ticker realized/unrealized metrics
+      const allTickers = Object.keys(tickerStats).sort();
+      if (allTickers.length === 0) summaryContainer.innerHTML = '<span class="text-slate-400 text-[10px]">No active or closed positions found.</span>';
       else {
         summaryContainer.innerHTML = '';
-        openTickers.forEach(t => {
-          const s = openStats[t], card = document.createElement('div');
-          card.className = "bg-white border border-slate-200 rounded px-2.5 py-1 text-[10px] flex items-center gap-2 shadow-xs";
+        allTickers.forEach(t => {
+          const s = tickerStats[t];
+          const card = document.createElement('div');
+          card.className = "bg-white border border-slate-200 rounded p-2 text-[10px] flex flex-wrap items-center gap-x-3 gap-y-1 shadow-xs";
+          
           let cspBadges = '';
           if (s.cspCapital > 0) {
             const parts = [];
@@ -674,7 +704,22 @@ HTML_CONTENT = """<!DOCTYPE html>
             if (s.ibkrCsp > 0) parts.push(`<span class="text-blue-700 font-bold">IB: ${fmtCurrency(s.ibkrCsp)}</span>`);
             cspBadges = `<div class="bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded flex items-center gap-1 font-mono">${parts.join(' | ')}</div>`;
           }
-          card.innerHTML = `<span class="font-bold text-slate-800">${t}:</span><span class="font-extrabold text-blue-700">${s.total}</span><span class="text-[9px] text-slate-400 font-mono">(${s.puts}P / ${s.calls}C)</span>${cspBadges}`;
+
+          const realColor = s.realizedPl >= 0 ? 'text-emerald-700 font-bold' : 'text-rose-700 font-bold';
+          const unrealColor = s.unrealizedPl >= 0 ? 'text-emerald-700 font-bold' : 'text-rose-700 font-bold';
+
+          card.innerHTML = `
+            <div class="flex items-center gap-1.5">
+              <span class="font-extrabold text-slate-800 text-[11px]">${t}</span>
+              <span class="text-[9px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-mono font-semibold">${s.total} Open (${s.puts}P / ${s.calls}C)</span>
+            </div>
+            <div class="flex items-center gap-2 font-mono text-[9.5px]">
+              <span>Realized: <span class="${realColor}">${fmt(s.realizedPl)}</span></span>
+              <span class="text-slate-300">|</span>
+              <span>Unrealized: <span class="${unrealColor}">${fmt(s.unrealizedPl)}</span></span>
+            </div>
+            ${cspBadges}
+          `;
           summaryContainer.appendChild(card);
         });
       }
@@ -831,7 +876,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         tbody.appendChild(tr);
       });
 
-      const fmt = (val) => `${val >= 0 ? '+$' : '-$'}${Math.abs(val).toFixed(2)}`;
       document.getElementById('totalRealized').innerText = fmt(totalRealized);
       document.getElementById('lastMonthRealized').innerText = fmt(lastMonthRealized);
       document.getElementById('thisMonthRealized').innerText = fmt(thisMonthRealized);
@@ -897,19 +941,57 @@ HTML_CONTENT = """<!DOCTYPE html>
         if (!res.ok) throw new Error("API error");
         const data = await res.json();
         
-        // --- ABNORMAL DATA FIREWALL ---
-        if (isSilent) {
-            let populatedContracts = 0;
-            if (data.targets && data.puts) {
-                data.targets.forEach(tgt => {
-                    const dict = data.puts[tgt] || {};
-                    Object.keys(dict).forEach(k => { if (dict[k].strike) populatedContracts++; });
-                });
+        // --- UNIVERSAL ABNORMAL DATA FIREWALL (Applied to BOTH Auto and Manual Refresh) ---
+        let populatedContracts = 0;
+        if (data.targets && data.puts) {
+            data.targets.forEach(tgt => {
+                const dict = data.puts[tgt] || {};
+                Object.keys(dict).forEach(k => { if (dict[k].strike) populatedContracts++; });
+            });
+        }
+        if (data.targets && data.calls) {
+            data.targets.forEach(tgt => {
+                const dict = data.calls[tgt] || {};
+                Object.keys(dict).forEach(k => { if (dict[k].strike) populatedContracts++; });
+            });
+        }
+
+        const isAbnormal = (data.is_cached || populatedContracts === 0);
+
+        if (isAbnormal) {
+            // If valid data is already displayed on screen, protect it and abort overwrite!
+            if (globalData) {
+                status.innerHTML = `<span class="text-amber-600 font-bold">⚠️ Refresh rejected (Abnormal/Empty Data from provider)</span> at ${new Date().toLocaleTimeString()}`;
+                if (data.diagnostics && Object.keys(data.diagnostics).length > 0) {
+                    const diagBanner = document.getElementById('diagBanner');
+                    const diagList = document.getElementById('diagList');
+                    diagBanner.classList.remove('hidden');
+                    document.getElementById('diagTitle').innerText = "Notice: Provider returned abnormal/empty data";
+                    diagList.innerHTML = '';
+                    Object.entries(data.diagnostics).forEach(([tkr, msg]) => {
+                        const li = document.createElement('li'); li.innerHTML = `<span class="font-bold">${tkr}:</span> ${msg}`; diagList.appendChild(li);
+                    });
+                }
+                return;
             }
-            // Reject the auto-refresh if it fell back to cache, or zero contracts were populated
-            if (data.is_cached || populatedContracts === 0) {
-                status.innerHTML = `<span class="text-amber-600 font-bold">⚠️ Auto-refresh skipped (Abnormal/Empty Data)</span> at ${new Date().toLocaleTimeString()}`;
-                return; 
+
+            // On initial load fallback to local backup if available
+            const localSaved = localStorage.getItem('cached_options_payload');
+            if (localSaved) {
+                const parsed = JSON.parse(localSaved);
+                let savedContracts = 0;
+                if (parsed.targets && parsed.puts) {
+                    parsed.targets.forEach(tgt => {
+                        const dict = parsed.puts[tgt] || {};
+                        Object.keys(dict).forEach(k => { if (dict[k].strike) savedContracts++; });
+                    });
+                }
+                if (savedContracts > 0) {
+                    applyDataPayload(parsed);
+                    hasLoadedOnce = true;
+                    status.innerHTML = `<span class="text-amber-600 font-bold">⚠️ Using Good Backup (Live data abnormal)</span> at ${new Date().toLocaleTimeString()}`;
+                    return;
+                }
             }
         }
         
@@ -1293,7 +1375,6 @@ def get_options_data(tickers: str = "IREN,RKLB", contract_tickers: str = "", del
 
         tkr = yf.Ticker(ticker)
         
-        # User dropdown overrides the default behavior
         use_md = (provider == "marketdata")
         
         # --- ISOLATED SPOT FETCH ---
