@@ -241,7 +241,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             <input type="checkbox" id="critWaEnabled" onchange="saveAlertCriteria()">
             <span>Enable Twilio Alerts</span>
           </label>
-          <input id="critWaNumber" type="text" placeholder="Format: +1234567890 (SMS) or whatsapp:+1234567890" class="w-full sm:w-80 border rounded p-1.5 text-xs bg-white font-mono" onchange="saveAlertCriteria()" onblur="saveAlertCriteria()">
+          <input id="critWaNumber" type="text" placeholder="Format: +1234567890 (SMS) or whatsapp:+1234567890" class="w-full sm:w-80 border rounded p-1 text-xs bg-white font-mono" onchange="saveAlertCriteria()" onblur="saveAlertCriteria()">
           <span class="text-[9px] text-slate-400">1-hour cooldown per ticker to prevent spam.</span>
         </div>
       </div>
@@ -275,17 +275,20 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Ticker Performance (P/L) & CSP Capital Summary -->
+    <!-- Ticker Performance (P/L) & Capital Summary -->
     <div class="bg-slate-50 border border-slate-200 rounded-lg p-2.5 mb-3">
       <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
         <div class="flex items-center gap-2">
-          <span class="text-[11px] font-bold text-slate-700">📊 Ticker Performance (P/L) &amp; CSP Capital Requirement</span>
+          <span class="text-[11px] font-bold text-slate-700">📊 Ticker Performance (P/L) &amp; Capital Requirement</span>
           <span id="totalOpenQty" class="text-[10px] font-semibold text-slate-500 bg-slate-200/70 px-1.5 py-0.5 rounded">Total Open: 0</span>
         </div>
         <div class="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
-          <span id="moomooCspCapital" class="text-orange-800 bg-orange-100 border border-orange-200 px-2 py-0.5 rounded font-bold">Moomoo: $0</span>
-          <span id="ibkrCspCapital" class="text-blue-800 bg-blue-100 border border-blue-200 px-2 py-0.5 rounded font-bold">IBKR: $0</span>
-          <span id="totalCspCapital" class="text-emerald-800 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded font-extrabold">Total CSP: $0.00</span>
+          <span id="moomooCspCapital" class="text-orange-800 bg-orange-100 border border-orange-200 px-2 py-0.5 rounded font-bold">Moo: $0</span>
+          <span id="ibkrCspCapital" class="text-blue-800 bg-blue-100 border border-blue-200 px-2 py-0.5 rounded font-bold">IB: $0</span>
+          <span id="totalCspCapital" class="text-sky-800 bg-sky-100 border border-sky-300 px-2 py-0.5 rounded font-bold">Total CSP: $0</span>
+          <span id="totalCcCapital" class="text-purple-800 bg-purple-100 border border-purple-300 px-2 py-0.5 rounded font-bold">Total CC Stock: $0</span>
+          <span id="avgAnnPctBadge" class="text-emerald-900 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded font-extrabold">Avg Ann: 0.0%</span>
+          <span id="estAnnualGainBadge" class="text-emerald-950 bg-emerald-200 border border-emerald-400 px-2 py-0.5 rounded font-extrabold">Est. Gain: +$0/yr</span>
         </div>
       </div>
       <div id="openSummaryCards" class="flex flex-wrap gap-2"></div>
@@ -360,7 +363,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             <th class="p-1.5 border-r text-center">Trade Day</th>
             <th class="p-1.5 border-r text-center">Exp</th>
             <th class="p-1.5 border-r">Entry</th>
-            <th class="p-1.5 border-r font-extrabold text-emerald-900 bg-emerald-50/70">Ann %</th>
+            <th id="thAnnPct" class="p-1.5 border-r font-extrabold text-emerald-900 bg-emerald-50/70 text-center">Ann %</th>
             <th class="p-1.5 border-r">Live Mark</th>
             <th class="p-1.5 border-r font-extrabold text-blue-900 bg-blue-50/70">Cur P/L ($)</th>
             <th class="p-1.5 border-r">Max P/L ($)</th>
@@ -638,6 +641,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       let totalRealized = 0, thisMonthRealized = 0, lastMonthRealized = 0;
       let totalMaxUnrealized = 0, totalCurrentUnrealized = 0, thisMonthCurrentUnrealized = 0;
       let totalOpenCount = 0, totalCspCapital = 0, moomooCspCapital = 0, ibkrCspCapital = 0;
+      let totalCcStockCapital = 0, totalActiveCapital = 0, totalAnnualDollarGain = 0;
 
       // Accumulator for per-ticker performance metrics
       const tickerStats = {};
@@ -648,6 +652,9 @@ HTML_CONTENT = """<!DOCTYPE html>
             puts: 0,
             calls: 0,
             cspCapital: 0,
+            ccCapital: 0,
+            activeCapital: 0,
+            annualDollarGain: 0,
             moomooCsp: 0,
             ibkrCsp: 0,
             realizedPl: 0,
@@ -693,16 +700,29 @@ HTML_CONTENT = """<!DOCTYPE html>
           const broker = (p.broker || 'moomoo').toLowerCase();
           
           tickerStats[tkr].total += p.qty;
+          const contractCapital = p.strike * 100 * p.qty;
+
+          if (p.action === 'SELL' && p.strike > 0 && p.prem > 0) {
+            let bDays = getBusinessDaysCount(p.trade_date || todayStr, p.exp);
+            let annDollarGain = (p.prem * 100 * p.qty) * (252 / bDays);
+            
+            totalActiveCapital += contractCapital;
+            totalAnnualDollarGain += annDollarGain;
+
+            tickerStats[tkr].activeCapital += contractCapital;
+            tickerStats[tkr].annualDollarGain += annDollarGain;
+          }
 
           if (p.type === 'PUT') {
             tickerStats[tkr].puts += p.qty;
-            const cap = p.strike * 100 * p.qty;
-            tickerStats[tkr].cspCapital += cap;
-            totalCspCapital += cap;
-            if (broker === 'moomoo') { moomooCspCapital += cap; tickerStats[tkr].moomooCsp += cap; }
-            else if (broker === 'ibkr') { ibkrCspCapital += cap; tickerStats[tkr].ibkrCsp += cap; }
+            tickerStats[tkr].cspCapital += contractCapital;
+            totalCspCapital += contractCapital;
+            if (broker === 'moomoo') { moomooCspCapital += contractCapital; tickerStats[tkr].moomooCsp += contractCapital; }
+            else if (broker === 'ibkr') { ibkrCspCapital += contractCapital; tickerStats[tkr].ibkrCsp += contractCapital; }
           } else if (p.type === 'CALL') {
             tickerStats[tkr].calls += p.qty;
+            tickerStats[tkr].ccCapital += contractCapital;
+            totalCcStockCapital += contractCapital;
           }
 
           const maxPl = (p.action === 'SELL') ? (p.prem * 100 * p.qty) : (-p.prem * 100 * p.qty);
@@ -721,9 +741,19 @@ HTML_CONTENT = """<!DOCTYPE html>
       const summaryContainer = document.getElementById('openSummaryCards');
       document.getElementById('totalOpenQty').innerText = `Total Open: ${totalOpenCount}`;
       const fmtCurrency = (val) => `$${val.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
-      document.getElementById('moomooCspCapital').innerText = `Moomoo CSP: ${fmtCurrency(moomooCspCapital)}`;
-      document.getElementById('ibkrCspCapital').innerText = `IBKR CSP: ${fmtCurrency(ibkrCspCapital)}`;
+      document.getElementById('moomooCspCapital').innerText = `Moo: ${fmtCurrency(moomooCspCapital)}`;
+      document.getElementById('ibkrCspCapital').innerText = `IB: ${fmtCurrency(ibkrCspCapital)}`;
       document.getElementById('totalCspCapital').innerText = `Total CSP: ${fmtCurrency(totalCspCapital)}`;
+      document.getElementById('totalCcCapital').innerText = `Total CC Stock: ${fmtCurrency(totalCcStockCapital)}`;
+
+      const weightedAvgAnn = totalActiveCapital > 0 ? (totalAnnualDollarGain / totalActiveCapital) * 100 : 0;
+      document.getElementById('avgAnnPctBadge').innerText = `Avg Ann: ${weightedAvgAnn.toFixed(1)}%`;
+      document.getElementById('estAnnualGainBadge').innerText = `Est. Gain: +${fmtCurrency(totalAnnualDollarGain)}/yr`;
+
+      const thAnn = document.getElementById('thAnnPct');
+      if (thAnn) {
+        thAnn.innerHTML = `Ann % <span class="block text-[8px] font-normal text-emerald-700 font-mono">(Avg: ${weightedAvgAnn.toFixed(1)}%)</span>`;
+      }
 
       const fmt = (val) => `${val >= 0 ? '+$' : '-$'}${Math.abs(val).toFixed(2)}`;
 
@@ -744,12 +774,13 @@ HTML_CONTENT = """<!DOCTYPE html>
           const card = document.createElement('div');
           card.className = "bg-white border border-slate-200 rounded-md p-2.5 flex flex-col gap-1.5 shadow-sm min-w-[160px] flex-1 sm:flex-none";
           
-          let cspBadges = '';
-          if (s.cspCapital > 0) {
-            const parts = [];
-            if (s.moomooCsp > 0) parts.push(`<span class="text-orange-700 font-bold">Moo: ${fmtCurrency(s.moomooCsp)}</span>`);
-            if (s.ibkrCsp > 0) parts.push(`<span class="text-blue-700 font-bold">IB: ${fmtCurrency(s.ibkrCsp)}</span>`);
-            cspBadges = `<div class="bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded flex items-center justify-center gap-1 text-[9px] font-mono mt-1">${parts.join(' | ')}</div>`;
+          let capBadges = '';
+          const parts = [];
+          if (s.moomooCsp > 0) parts.push(`<span class="text-orange-700 font-bold">Moo: ${fmtCurrency(s.moomooCsp)}</span>`);
+          if (s.ibkrCsp > 0) parts.push(`<span class="text-blue-700 font-bold">IB: ${fmtCurrency(s.ibkrCsp)}</span>`);
+          if (s.ccCapital > 0) parts.push(`<span class="text-purple-700 font-bold">CC: ${fmtCurrency(s.ccCapital)}</span>`);
+          if (parts.length > 0) {
+            capBadges = `<div class="bg-slate-50 border border-slate-200 px-1.5 py-0.5 rounded flex flex-wrap items-center justify-center gap-1 text-[9px] font-mono mt-1">${parts.join(' | ')}</div>`;
           }
 
           const localMaxAbs = Math.max(Math.abs(s.realizedPl), Math.abs(s.unrealizedPl), Math.abs(s.maxUnrealizedPl)) || 1;
@@ -771,7 +802,12 @@ HTML_CONTENT = """<!DOCTYPE html>
             `;
           };
 
-          // Scale Max Unrealized against the Global Maximum to compare risk across tickers visually
+          let tickerAnnBadge = '';
+          if (s.activeCapital > 0) {
+            const tAnn = (s.annualDollarGain / s.activeCapital) * 100;
+            tickerAnnBadge = `<div class="flex items-center justify-between text-[9px] font-mono px-0.5 pt-0.5"><span class="text-slate-500 font-semibold">Ann Yield:</span><span class="text-emerald-700 font-bold">${tAnn.toFixed(1)}% (~${fmtCurrency(s.annualDollarGain)}/yr)</span></div>`;
+          }
+
           card.innerHTML = `
             <div class="flex items-center justify-between mb-1">
               <span class="font-extrabold text-slate-800 text-[11px]">${t}</span>
@@ -780,7 +816,8 @@ HTML_CONTENT = """<!DOCTYPE html>
             ${buildBar('Realized', s.realizedPl, localMaxAbs)}
             ${buildBar('Cur Unreal', s.unrealizedPl, localMaxAbs)}
             ${buildBar('Max Unreal', s.maxUnrealizedPl, globalMaxUnrealAbs)}
-            ${cspBadges}
+            ${tickerAnnBadge}
+            ${capBadges}
           `;
           summaryContainer.appendChild(card);
         });
