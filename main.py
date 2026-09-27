@@ -176,11 +176,11 @@ HTML_CONTENT = """<!DOCTYPE html>
           <input id="hideExpiredToggle" type="checkbox" onchange="toggleHideExpired(this.checked)" class="rounded text-blue-600">
           <span>Hide Expired</span>
         </label>
-        <button onclick="toggleAlertSettings()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold px-2 py-0.5 rounded border border-slate-200 flex items-center gap-1">
+        <button onclick="if(checkAuth()) toggleAlertSettings()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold px-2 py-0.5 rounded border border-slate-200 flex items-center gap-1">
           <span>⚙</span> Settings
         </button>
       </div>
-      <button onclick="toggleAddForm()" id="toggleFormBtn" class="bg-slate-800 text-white text-[10px] font-bold px-2.5 py-1 rounded-md">
+      <button onclick="if(checkAuth()) toggleAddForm()" id="toggleFormBtn" class="bg-slate-800 text-white text-[10px] font-bold px-2.5 py-1 rounded-md">
         + Add Position
       </button>
     </div>
@@ -472,6 +472,21 @@ HTML_CONTENT = """<!DOCTYPE html>
     let hideExpired = localStorage.getItem('hideExpiredContracts') === 'true';
     let hasLoadedOnce = false;
 
+    // Default password for editing features. Change this to whatever you want.
+    const APP_PASSWORD = "admin"; 
+
+    function checkAuth() {
+        if (sessionStorage.getItem('app_unlocked') === 'true') return true;
+        const pwd = prompt("Enter password to access edit features:");
+        if (pwd === APP_PASSWORD) {
+            sessionStorage.setItem('app_unlocked', 'true');
+            return true;
+        } else if (pwd !== null) {
+            alert("Incorrect password.");
+        }
+        return false;
+    }
+
     const DEFAULT_ALERT_CRITERIA = {
       putWarnPct: 3.0, putWarnDte: 10, putCritDte: 5,
       callWarnPct: 2.0, putHighIvPctile: 85.0, callHighIvPctile: 80.0,
@@ -591,11 +606,13 @@ HTML_CONTENT = """<!DOCTYPE html>
     }
 
     async function deletePosition(id) {
-      if (!confirm("Delete?")) return;
+      if (!checkAuth()) return;
+      if (!confirm("Delete this position?")) return;
       if ((await fetch(`/api/positions/${id}`, { method: 'DELETE' })).ok) loadCloudPositions();
     }
     
     async function updatePositionField(id, field, value) {
+      if (!checkAuth()) { renderPositionsAndPL(); return; }
       const pos = cloudPositions.find(p => p.id === id);
       if (!pos) return;
       if (field === 'strike' || field === 'prem') pos[field] = parseFloat(value) || 0;
@@ -983,7 +1000,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         const curBroker = (p.broker || 'moomoo').toLowerCase();
         const brokerBadge = curBroker === 'moomoo' ? '<span class="text-orange-600 font-bold">MOO</span>' : '<span class="text-blue-700 font-bold">IBKR</span>';
 
-        const tradeDateDisplay = `<input type="date" value="${p.trade_date || ''}" onchange="updatePositionField(${p.id}, 'trade_date', this.value)" class="border border-slate-200 rounded px-1 py-0.5 bg-white font-mono text-[9px] text-slate-700 w-[85px] hover:border-blue-400 transition-colors">`;
+        const tradeDateDisplay = shortDate(p.trade_date);
 
         const tr = document.createElement('tr');
         tr.className = `border-b ${getExpColor(p.exp, posColorMap)}`;
@@ -991,7 +1008,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           <td class="p-1.5 border-r whitespace-nowrap text-[9px] text-center">${brokerBadge}</td>
           <td class="p-1.5 border-r whitespace-nowrap">${actionBadge}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-bold">${p.ticker} $${p.strike} ${p.type} (x${p.qty})</td>
-          <td class="p-1 border-r whitespace-nowrap text-center">${tradeDateDisplay}</td>
+          <td class="p-1.5 border-r whitespace-nowrap font-mono text-[9px] text-slate-600 text-center">${tradeDateDisplay}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono text-[9px] font-bold text-slate-800 text-center">${shortDate(p.exp)}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono text-center">${annDisplay}</td>
