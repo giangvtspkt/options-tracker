@@ -208,9 +208,9 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
 
       <div class="flex items-center justify-between mb-2 border-t border-slate-200 pt-2">
-        <span class="font-bold text-[11px] text-slate-700">⚙ Custom Rolling &amp; IV Percentile Alerts</span>
+        <span class="font-bold text-[11px] text-slate-700">⚙ Custom Rolling &amp; IV Alerts</span>
       </div>
-      <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-[10px]">
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-[10px]">
         <div>
           <label class="font-semibold text-slate-600 block mb-0.5">CSP Warn Buffer (%)</label>
           <input id="critPutWarnPct" type="number" step="0.5" class="w-full border rounded p-1.5 text-xs bg-white" onchange="saveAlertCriteria()">
@@ -227,6 +227,8 @@ HTML_CONTENT = """<!DOCTYPE html>
           <label class="font-semibold text-slate-600 block mb-0.5">CC Tested Buffer (%)</label>
           <input id="critCallWarnPct" type="number" step="0.5" class="w-full border rounded p-1.5 text-xs bg-white" onchange="saveAlertCriteria()">
         </div>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-[10px] mt-2.5">
         <div class="bg-amber-50/70 p-1.5 rounded border border-amber-200">
           <label class="font-bold text-amber-900 block mb-0.5">🔥 Put High Vol (%ile)</label>
           <input id="critPutHighIvPctile" type="number" step="5" class="w-full border rounded p-1.5 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
@@ -235,15 +237,20 @@ HTML_CONTENT = """<!DOCTYPE html>
           <label class="font-bold text-amber-900 block mb-0.5">🔥 Call High Vol (%ile)</label>
           <input id="critCallHighIvPctile" type="number" step="5" class="w-full border rounded p-1.5 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
         </div>
-        <!-- Alert Recipient Settings -->
-        <div class="col-span-2 sm:col-span-3 mt-1 pt-2 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center gap-2">
-          <label class="font-bold text-emerald-800 flex items-center gap-1.5 whitespace-nowrap bg-emerald-50 px-2 py-1 rounded border border-emerald-200">
-            <input type="checkbox" id="critWaEnabled" onchange="saveAlertCriteria()">
-            <span>Enable Twilio Alerts</span>
-          </label>
-          <input id="critWaNumber" type="text" placeholder="Format: +1234567890 (SMS) or whatsapp:+1234567890" class="w-full sm:w-80 border rounded p-1.5 text-xs bg-white font-mono" onchange="saveAlertCriteria()" onblur="saveAlertCriteria()">
-          <span class="text-[9px] text-slate-400">1-hour cooldown per ticker to prevent spam.</span>
+        <div class="bg-amber-50/70 p-1.5 rounded border border-amber-200">
+          <label class="font-bold text-amber-900 block mb-0.5">⏱️ IV History (Trading Days)</label>
+          <input id="critIvHistoryDays" type="number" step="1" class="w-full border rounded p-1.5 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
         </div>
+      </div>
+      
+      <!-- Alert Recipient Settings -->
+      <div class="mt-2.5 pt-2 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center gap-2">
+        <label class="font-bold text-emerald-800 flex items-center gap-1.5 whitespace-nowrap bg-emerald-50 px-2 py-1 rounded border border-emerald-200">
+          <input type="checkbox" id="critWaEnabled" onchange="saveAlertCriteria()">
+          <span>Enable Twilio Alerts</span>
+        </label>
+        <input id="critWaNumber" type="text" placeholder="Format: +1234567890 (SMS) or whatsapp:+1234567890" class="w-full sm:w-80 border rounded p-1.5 text-xs bg-white font-mono" onchange="saveAlertCriteria()" onblur="saveAlertCriteria()">
+        <span class="text-[9px] text-slate-400">1-hour cooldown per ticker to prevent spam.</span>
       </div>
     </div>
 
@@ -490,6 +497,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     const DEFAULT_ALERT_CRITERIA = {
       putWarnPct: 3.0, putWarnDte: 10, putCritDte: 5,
       callWarnPct: 2.0, putHighIvPctile: 85.0, callHighIvPctile: 80.0,
+      ivHistoryDays: 40,
       waEnabled: false, waNumber: "",
       refreshStart: "20:30", refreshEnd: "03:00"
     };
@@ -507,6 +515,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       document.getElementById('critCallWarnPct').value = alertCriteria.callWarnPct;
       document.getElementById('critPutHighIvPctile').value = alertCriteria.putHighIvPctile;
       document.getElementById('critCallHighIvPctile').value = alertCriteria.callHighIvPctile;
+      document.getElementById('critIvHistoryDays').value = alertCriteria.ivHistoryDays;
       document.getElementById('critWaEnabled').checked = alertCriteria.waEnabled;
       document.getElementById('critWaNumber').value = alertCriteria.waNumber;
       
@@ -521,6 +530,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       alertCriteria.callWarnPct = parseFloat(document.getElementById('critCallWarnPct').value) || 2.0;
       alertCriteria.putHighIvPctile = parseFloat(document.getElementById('critPutHighIvPctile').value) || 85.0;
       alertCriteria.callHighIvPctile = parseFloat(document.getElementById('critCallHighIvPctile').value) || 80.0;
+      alertCriteria.ivHistoryDays = parseInt(document.getElementById('critIvHistoryDays').value) || 40;
       alertCriteria.waEnabled = document.getElementById('critWaEnabled').checked;
       alertCriteria.waNumber = document.getElementById('critWaNumber').value.trim();
       
@@ -609,19 +619,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (!checkAuth()) return;
       if (!confirm("Delete this position?")) return;
       if ((await fetch(`/api/positions/${id}`, { method: 'DELETE' })).ok) loadCloudPositions();
-    }
-    
-    async function updatePositionField(id, field, value) {
-      if (!checkAuth()) { renderPositionsAndPL(); return; }
-      const pos = cloudPositions.find(p => p.id === id);
-      if (!pos) return;
-      if (field === 'strike' || field === 'prem') pos[field] = parseFloat(value) || 0;
-      else if (field === 'qty') pos[field] = parseInt(value) || 1;
-      else pos[field] = value;
-
-      const res = await fetch(`/api/positions/${id}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(pos) });
-      if (res.ok && (field === 'exp' || field === 'ticker' || field === 'strike')) fetchData(true);
-      else if (res.ok) renderPositionsAndPL();
     }
 
     function renderPositionsAndPL() {
@@ -719,7 +716,6 @@ HTML_CONTENT = """<!DOCTYPE html>
           tickerStats[tkr].total += p.qty;
           
           // BUG FIX: Differentiate capital basis between Puts and Calls
-          // Puts tie up the strike price. Calls tie up the underlying stock value (spot price).
           const capitalBasis = (p.type === 'CALL' && spot !== null && spot > 0) ? spot : p.strike;
           const contractCapital = capitalBasis * 100 * p.qty;
 
@@ -1109,7 +1105,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       try {
         fetchFearGreed(); // Fetch sentiment concurrently
-        const res = await fetch(`/api/data?tickers=${encodeURIComponent(tickers)}&contract_tickers=${encodeURIComponent(contractTickers.join(','))}&delta=${delta}&provider=${providerInput}`);
+        const res = await fetch(`/api/data?tickers=${encodeURIComponent(tickers)}&contract_tickers=${encodeURIComponent(contractTickers.join(','))}&delta=${delta}&provider=${providerInput}&iv_history_days=${alertCriteria.ivHistoryDays}`);
         if (!res.ok) throw new Error("API error");
         const data = await res.json();
         
@@ -1532,7 +1528,7 @@ def _native_delta(row, bs_delta):
     return bs_delta
 
 @app.get("/api/data")
-def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "", delta: float = 0.2, provider: str = "yfinance"):
+def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "", delta: float = 0.2, provider: str = "yfinance", iv_history_days: int = 40):
     positions, _ = get_positions_from_github()
     cache_store = load_cached_data()
     
@@ -1631,9 +1627,12 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
 
         ticker_hv_pctile = None
         if len(hist_vols) > 0:
-            current_hv = hist_vols[-1]
-            count_below = sum(1 for v in hist_vols if v < current_hv)
-            ticker_hv_pctile = round((count_below / len(hist_vols)) * 100.0, 1)
+            window_size = max(1, iv_history_days)
+            windowed_vols = hist_vols[-window_size:] if window_size > 0 else hist_vols
+            if len(windowed_vols) > 0:
+                current_hv = windowed_vols[-1]
+                count_below = sum(1 for v in windowed_vols if v < current_hv)
+                ticker_hv_pctile = round((count_below / len(windowed_vols)) * 100.0, 1)
 
         if df_hist is not None and not df_hist.empty and len(df_hist) >= 2:
             try:
