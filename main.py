@@ -241,7 +241,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             <input type="checkbox" id="critWaEnabled" onchange="saveAlertCriteria()">
             <span>Enable Twilio Alerts</span>
           </label>
-          <input id="critWaNumber" type="text" placeholder="Format: +1234567890 (SMS) or whatsapp:+1234567890" class="w-full sm:w-80 border rounded p-1 text-xs bg-white font-mono" onchange="saveAlertCriteria()" onblur="saveAlertCriteria()">
+          <input id="critWaNumber" type="text" placeholder="Format: +1234567890 (SMS) or whatsapp:+1234567890" class="w-full sm:w-80 border rounded p-1.5 text-xs bg-white font-mono" onchange="saveAlertCriteria()" onblur="saveAlertCriteria()">
           <span class="text-[9px] text-slate-400">1-hour cooldown per ticker to prevent spam.</span>
         </div>
       </div>
@@ -700,7 +700,11 @@ HTML_CONTENT = """<!DOCTYPE html>
           const broker = (p.broker || 'moomoo').toLowerCase();
           
           tickerStats[tkr].total += p.qty;
-          const contractCapital = p.strike * 100 * p.qty;
+          
+          // BUG FIX: Differentiate capital basis between Puts and Calls
+          // Puts tie up the strike price. Calls tie up the underlying stock value (spot price).
+          const capitalBasis = (p.type === 'CALL' && spot !== null && spot > 0) ? spot : p.strike;
+          const contractCapital = capitalBasis * 100 * p.qty;
 
           if (p.action === 'SELL' && p.strike > 0 && p.prem > 0) {
             let bDays = getBusinessDaysCount(p.trade_date || todayStr, p.exp);
@@ -715,13 +719,13 @@ HTML_CONTENT = """<!DOCTYPE html>
 
           if (p.type === 'PUT') {
             tickerStats[tkr].puts += p.qty;
-            tickerStats[tkr].cspCapital += contractCapital;
+            tickerStats[tkr].cspCapital += contractCapital; // For Put, contractCapital is based on strike
             totalCspCapital += contractCapital;
             if (broker === 'moomoo') { moomooCspCapital += contractCapital; tickerStats[tkr].moomooCsp += contractCapital; }
             else if (broker === 'ibkr') { ibkrCspCapital += contractCapital; tickerStats[tkr].ibkrCsp += contractCapital; }
           } else if (p.type === 'CALL') {
             tickerStats[tkr].calls += p.qty;
-            tickerStats[tkr].ccCapital += contractCapital;
+            tickerStats[tkr].ccCapital += contractCapital; // For Call, contractCapital is based on stock value
             totalCcStockCapital += contractCapital;
           }
 
@@ -969,7 +973,8 @@ HTML_CONTENT = """<!DOCTYPE html>
         let annDisplay = '<span class="text-slate-400">-</span>';
         if (p.action === 'SELL' && p.strike > 0 && p.prem !== undefined) {
             let bDays = getBusinessDaysCount(p.trade_date || todayStr, p.exp);
-            let roc = (p.prem / p.strike) * 100;
+            let capBasis = (p.type === 'CALL' && spot !== null && spot > 0) ? spot : p.strike;
+            let roc = (p.prem / capBasis) * 100;
             let annPct = (roc * 252 / bDays).toFixed(1);
             annDisplay = `<span class="text-emerald-700 font-bold">${annPct}%</span>`;
         }
