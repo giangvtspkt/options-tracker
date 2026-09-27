@@ -360,6 +360,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             <th class="p-1.5 border-r text-center">Trade Day</th>
             <th class="p-1.5 border-r text-center">Exp</th>
             <th class="p-1.5 border-r">Entry</th>
+            <th class="p-1.5 border-r font-extrabold text-emerald-900 bg-emerald-50/70">Ann %</th>
             <th class="p-1.5 border-r">Live Mark</th>
             <th class="p-1.5 border-r font-extrabold text-blue-900 bg-blue-50/70">Cur P/L ($)</th>
             <th class="p-1.5 border-r">Max P/L ($)</th>
@@ -368,7 +369,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           </tr>
         </thead>
         <tbody id="positionsBody">
-          <tr><td colspan="11" class="p-2 text-center text-slate-400">Loading positions...</td></tr>
+          <tr><td colspan="12" class="p-2 text-center text-slate-400">Loading positions...</td></tr>
         </tbody>
       </table>
     </div>
@@ -544,6 +545,21 @@ HTML_CONTENT = """<!DOCTYPE html>
         document.getElementById('posTradeDate').value = new Date().toISOString().split('T')[0];
       }
     }
+    
+    function getBusinessDaysCount(startStr, endStr) {
+        let s = new Date(startStr + 'T00:00:00');
+        let e = new Date(endStr + 'T00:00:00');
+        if (isNaN(s) || isNaN(e) || s >= e) return 1;
+        let count = 0;
+        let cur = new Date(s);
+        cur.setDate(cur.getDate() + 1);
+        while (cur <= e) {
+            let dow = cur.getDay();
+            if (dow !== 0 && dow !== 6) count++;
+            cur.setDate(cur.getDate() + 1);
+        }
+        return Math.max(count, 1);
+    }
 
     async function loadCloudPositions() {
       try {
@@ -574,6 +590,18 @@ HTML_CONTENT = """<!DOCTYPE html>
     async function deletePosition(id) {
       if (!confirm("Delete?")) return;
       if ((await fetch(`/api/positions/${id}`, { method: 'DELETE' })).ok) loadCloudPositions();
+    }
+    
+    async function updatePositionField(id, field, value) {
+      const pos = cloudPositions.find(p => p.id === id);
+      if (!pos) return;
+      if (field === 'strike' || field === 'prem') pos[field] = parseFloat(value) || 0;
+      else if (field === 'qty') pos[field] = parseInt(value) || 1;
+      else pos[field] = value;
+
+      const res = await fetch(`/api/positions/${id}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(pos) });
+      if (res.ok && (field === 'exp' || field === 'ticker' || field === 'strike')) fetchData(true);
+      else if (res.ok) renderPositionsAndPL();
     }
 
     function renderPositionsAndPL() {
@@ -768,7 +796,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
       visiblePositions.sort((a, b) => new Date(a.exp) - new Date(b.exp) || a.ticker.localeCompare(b.ticker));
       
-      if (visiblePositions.length === 0) tbody.innerHTML = `<tr><td colspan="11" class="p-2 text-center text-slate-400">No active positions found.</td></tr>`;
+      if (visiblePositions.length === 0) tbody.innerHTML = `<tr><td colspan="12" class="p-2 text-center text-slate-400">No active positions found.</td></tr>`;
       else tbody.innerHTML = '';
 
       const posColorMap = {};
@@ -901,9 +929,19 @@ HTML_CONTENT = """<!DOCTYPE html>
           markDisplay = `<div><span class="font-mono font-medium text-slate-800">$${liveMark.toFixed(2)}</span>${spotSubtext}</div>`;
         }
 
+        let annDisplay = '<span class="text-slate-400">-</span>';
+        if (p.action === 'SELL' && p.strike > 0 && p.prem !== undefined) {
+            let bDays = getBusinessDaysCount(p.trade_date || todayStr, p.exp);
+            let roc = (p.prem / p.strike) * 100;
+            let annPct = (roc * 252 / bDays).toFixed(1);
+            annDisplay = `<span class="text-emerald-700 font-bold">${annPct}%</span>`;
+        }
+
         const actionBadge = p.action === 'SELL' ? '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">SELL</span>' : '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">BUY</span>';
         const curBroker = (p.broker || 'moomoo').toLowerCase();
         const brokerBadge = curBroker === 'moomoo' ? '<span class="text-orange-600 font-bold">MOO</span>' : '<span class="text-blue-700 font-bold">IBKR</span>';
+
+        const tradeDateDisplay = `<input type="date" value="${p.trade_date || ''}" onchange="updatePositionField(${p.id}, 'trade_date', this.value)" class="border border-slate-200 rounded px-1 py-0.5 bg-white font-mono text-[9px] text-slate-700 w-[85px] hover:border-blue-400 transition-colors">`;
 
         const tr = document.createElement('tr');
         tr.className = `border-b ${getExpColor(p.exp, posColorMap)}`;
@@ -911,9 +949,10 @@ HTML_CONTENT = """<!DOCTYPE html>
           <td class="p-1.5 border-r whitespace-nowrap text-[9px] text-center">${brokerBadge}</td>
           <td class="p-1.5 border-r whitespace-nowrap">${actionBadge}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-bold">${p.ticker} $${p.strike} ${p.type} (x${p.qty})</td>
-          <td class="p-1.5 border-r whitespace-nowrap font-mono text-[9px] text-slate-600 text-center">${shortDate(p.trade_date)}</td>
+          <td class="p-1 border-r whitespace-nowrap text-center">${tradeDateDisplay}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono text-[9px] font-bold text-slate-800 text-center">${shortDate(p.exp)}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
+          <td class="p-1.5 border-r whitespace-nowrap font-mono text-center">${annDisplay}</td>
           <td class="p-1.5 border-r whitespace-nowrap">${markDisplay}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono font-extrabold bg-blue-50/40 ${curPlColor}">${curPlDisplay}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono font-bold ${maxPlColor}">${maxPl >= 0 ? '+$' : '-$'}${Math.abs(maxPl).toFixed(2)}</td>
