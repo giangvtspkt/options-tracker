@@ -367,5 +367,17 @@
     "exp": "2026-10-16",
     "trade_date": "2026-09-30",
     "broker": "ibkr"
+  },
+  {
+    "id": 1790787284669,
+    "action": "SELL",
+    "type": "PUT",
+    "ticker": "IREN",
+    "strike": 40.5,
+    "prem": 0.63,
+    "qty": 1,
+    "exp": "2026-10-02",
+    "trade_date": "2026-09-30",
+    "broker": "moomoo"
   }
 ]
