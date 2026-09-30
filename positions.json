@@ -355,5 +355,17 @@
     "exp": "2026-10-02",
     "trade_date": "2026-09-30",
     "broker": "ibkr"
+  },
+  {
+    "id": 1790785074750,
+    "action": "SELL",
+    "type": "PUT",
+    "ticker": "WULF",
+    "strike": 14.0,
+    "prem": 0.57,
+    "qty": 5,
+    "exp": "2026-10-16",
+    "trade_date": "2026-09-30",
+    "broker": "ibkr"
   }
 ]
