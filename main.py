@@ -30,7 +30,8 @@ TWILIO_SMS_FROM = os.getenv("TWILIO_SMS_FROM", TWILIO_FROM_NUMBER)
 # --- Market Data Provider (marketdata.app) Config ---
 MARKETDATA_API_TOKEN = os.getenv("MARKETDATA_API_TOKEN", "")
 MD_BASE = "https://api.marketdata.app/v1"
-MD_MODE = os.getenv("MD_MODE", "cached")
+# BUG FIX: Removed mode="cached" which triggers 402 errors on Free accounts
+MD_MODE = os.getenv("MD_MODE", "")
 MD_TIMEOUT = int(os.getenv("MD_TIMEOUT", "15"))
 
 CACHE_FILE_PATH = os.path.join(tempfile.gettempdir(), "options_cache_data.json")
@@ -913,7 +914,7 @@ HTML_CONTENT = """<!DOCTYPE html>
                 alertMsg = `🚨 CRITICAL: ${p.ticker} $${p.strike} Put needs attention (ROLL / ASSIGN NOW). Spot is $${spot.toFixed(2)} (${pctFromStrike > 0 ? '+' : ''}${pctFromStrike.toFixed(1)}%).`;
               } else if (pctFromStrike <= alertCriteria.putWarnPct) {
                 statusHtml = '<span class="px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-extrabold whitespace-nowrap">ROLL SOON</span>';
-                alertMsg = `⚠️ WARNING: ${p.ticker} $${p.strike} Put is tested (ROLL SOON). Spot is $${spot.toFixed(2)} (${pctFromStrike > 0 ? '+' : ''}${pctFromStrike.toFixed(1)}%). DTE: ${dte}d.`;
+                alertMsg = `⚠️️ WARNING: ${p.ticker} $${p.strike} Put is tested (ROLL SOON). Spot is $${spot.toFixed(2)} (${pctFromStrike > 0 ? '+' : ''}${pctFromStrike.toFixed(1)}%). DTE: ${dte}d.`;
               }
             } else if (p.type === 'CALL') {
               if (spot >= p.strike) {
@@ -1046,7 +1047,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         
         if (globalData.is_cached) {
             const li = document.createElement('li'); 
-            li.innerHTML = `<span class="font-bold text-rose-700">Both MarketData & Yahoo Finance APIs rejected the request.</span> Showing last cached data.`; 
+            li.innerHTML = `<span class="font-bold text-rose-700">Live API rejected the request.</span> Showing last cached data.`; 
             diagList.appendChild(li);
         }
 
@@ -1127,7 +1128,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         const isAbnormal = (data.is_cached || populatedContracts === 0);
 
         if (isAbnormal) {
-            // If valid data is already displayed on screen, protect it and abort overwrite!
+            // Update UI with precise diagnostic errors if available
             if (globalData) {
                 status.innerHTML = `<span class="text-amber-600 font-bold">⚠️ Refresh rejected (Abnormal/Empty Data from provider)</span> at ${new Date().toLocaleTimeString()}`;
                 if (data.diagnostics && Object.keys(data.diagnostics).length > 0) {
@@ -1441,17 +1442,29 @@ def send_alert(payload: AlertPayload):
 
 # --- marketdata.app provider (Trader plan: real-time options, hosted REST) ---
 def md_request(path, params=None):
-    """GET a marketdata.app endpoint. Returns decoded JSON; raises on any error."""
+    """GET a marketdata.app endpoint. Returns decoded JSON; raises on clear errors."""
     url = f"{MD_BASE}{path}"
     headers = {}
     if MARKETDATA_API_TOKEN and MARKETDATA_API_TOKEN.strip():
         headers["Authorization"] = f"Bearer {MARKETDATA_API_TOKEN.strip()}"
-    r = requests.get(url, headers=headers, params=params or {}, timeout=MD_TIMEOUT)
-    r.raise_for_status()
-    data = r.json()
-    if data.get("s") != "ok":
-        raise RuntimeError(f"marketdata.app status={data.get('s')}")
-    return data
+    try:
+        r = requests.get(url, headers=headers, params=params or {}, timeout=MD_TIMEOUT)
+        
+        # Throw specific diagnostic errors for MarketData HTTP codes
+        if r.status_code == 401:
+            raise RuntimeError("401 Unauthorized: MarketData API token is missing or invalid.")
+        elif r.status_code == 402:
+            raise RuntimeError("402 Payment Required: Premium endpoint requested on a Free Tier.")
+        elif r.status_code == 403:
+            raise RuntimeError("403 Forbidden: IP temporarily blocked by MarketData.")
+            
+        r.raise_for_status()
+        data = r.json()
+        if data.get("s") != "ok":
+            raise RuntimeError(f"API Error: {data.get('s')}")
+        return data
+    except Exception as e:
+        raise RuntimeError(str(e))
 
 def md_expirations(ticker):
     """Return ['YYYY-MM-DD', ...] expirations for ticker."""
@@ -1495,8 +1508,10 @@ def _md_chain_df(data):
 
 def md_chain(ticker, expiration):
     """Return SimpleNamespace(calls=DataFrame, puts=DataFrame), like yf option_chain()."""
-    base = {"expiration": expiration, "mode": MD_MODE}
-    
+    base = {"expiration": expiration}
+    if MD_MODE:
+        base["mode"] = MD_MODE
+        
     try:
         data = md_request(f"/options/chain/{ticker}/", base)
         df = _md_chain_df(data)
@@ -1552,6 +1567,15 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
     
     successful_fetches = 0
 
+    # Initialize a custom session to spoof headers for Yahoo to prevent cloud blocks
+    yf_session = requests.Session()
+    yf_session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Upgrade-Insecure-Requests": "1"
+    })
+
     for ticker in combined_ticker_list:
         is_primary = ticker in primary_tickers
         spot_price = 0.0
@@ -1561,7 +1585,7 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
         
         use_md = (provider == "marketdata")
         
-        tkr = yf.Ticker(ticker)
+        tkr = yf.Ticker(ticker, session=yf_session)
         
         # --- ISOLATED SPOT FETCH ---
         if use_md:
@@ -1572,19 +1596,32 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
                 if is_primary:
                     diagnostics[ticker] = f"MarketData API Spot Check Failed: {str(e)[:100]}"
 
-        if spot_price is None or math.isnan(spot_price) or spot_price <= 0:
-            try:
-                if hasattr(tkr, 'fast_info'):
-                    sp = tkr.fast_info.get('last_price') or tkr.fast_info.get('lastPrice')
-                    if sp is not None:
-                        spot_price = float(sp)
-            except Exception: pass
-            
-            if spot_price is None or math.isnan(spot_price) or spot_price <= 0:
-                try:
-                    hist_1d = tkr.history(period="5d")
-                    if not hist_1d.empty: spot_price = float(hist_1d['Close'].iloc[-1])
-                except Exception: pass
+        # Combine Spot fetch and Historical Vol into a single call for Yahoo to drastically reduce API requests
+        try:
+            df_hist_1y = tkr.history(period="1y")
+            if df_hist_1y is not None and not df_hist_1y.empty and 'Close' in df_hist_1y.columns:
+                df_hist = df_hist_1y.tail(30)
+                
+                # Extract spot if we don't have it yet
+                if spot_price is None or spot_price <= 0:
+                    spot_price = float(df_hist_1y['Close'].iloc[-1])
+                    
+                df_clean = df_hist_1y['Close'].dropna()
+                df_clean = df_clean[df_clean > 0]
+                returns = np.log(df_clean / df_clean.shift(1)).dropna()
+                if len(returns) >= 20:
+                    rolling_vol = returns.rolling(window=20).std() * math.sqrt(252)
+                    hist_vols = [float(v) for v in rolling_vol.dropna().tolist() if not math.isnan(v) and v > 0]
+        except Exception as e:
+            if not use_md and is_primary: diagnostics[ticker] = f"Yahoo Spot/History blocked: {str(e)[:100]}"
+
+        if spot_price is not None and not math.isnan(spot_price) and spot_price > 0: 
+            successful_fetches += 1
+        else:
+            if is_primary and ticker not in all_spots: diagnostics[ticker] = "No spot price available from any provider."
+            continue
+
+        all_spots[ticker] = round(spot_price, 2)
 
         # --- ISOLATED EXPIRATIONS FETCH ---
         if use_md:
@@ -1596,33 +1633,14 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
                 
         if not expirations:
             try:
-                expirations = list(tkr.options) if tkr.options else []
+                opts = tkr.options
+                expirations = list(opts) if opts else []
             except Exception as e:
                 if is_primary: diagnostics[ticker] = f"Yahoo Finance Options Failed: {str(e)[:100]}"
+            
+            if not expirations and is_primary and ticker not in diagnostics:
+                diagnostics[ticker] = "Yahoo returned empty expirations (Render IP is likely blocked by Yahoo)."
 
-        # --- ISOLATED HISTORICAL VOLATILITY FETCH ---
-        try:
-            df_hist_1y = tkr.history(period="1y")
-            if df_hist_1y is not None and not df_hist_1y.empty and 'Close' in df_hist_1y.columns:
-                df_hist = df_hist_1y.tail(30)
-                df_clean = df_hist_1y['Close'].dropna()
-                df_clean = df_clean[df_clean > 0]
-                returns = np.log(df_clean / df_clean.shift(1)).dropna()
-                if len(returns) >= 20:
-                    rolling_vol = returns.rolling(window=20).std() * math.sqrt(252)
-                    hist_vols = [float(v) for v in rolling_vol.dropna().tolist() if not math.isnan(v) and v > 0]
-            else:
-                df_hist = tkr.history(period="30d")
-        except Exception:
-            pass
-
-        if spot_price is not None and not math.isnan(spot_price) and spot_price > 0: 
-            successful_fetches += 1
-        else:
-            if is_primary and ticker not in all_spots: diagnostics[ticker] = "No spot price available from any provider."
-            continue
-
-        all_spots[ticker] = round(spot_price, 2)
         if not expirations and is_primary: continue
 
         ticker_hv_pctile = None
@@ -1684,13 +1702,14 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
                             del diagnostics[ticker]
                         continue
                     except Exception as e:
-                        if is_primary: diagnostics[ticker] = f"MarketData API blocked/failed. Add API Token."
+                        if is_primary: diagnostics[ticker] = f"MarketData option chain failed: {str(e)[:100]}"
                 
                 loaded_chains[exp] = tkr.option_chain(exp)
                 if is_primary and ticker in diagnostics:
                     del diagnostics[ticker]
             except Exception as e: 
-                if is_primary: diagnostics[ticker] = "Both MarketData and Yahoo Finance failed to fetch options."
+                if is_primary and ticker not in diagnostics: 
+                    diagnostics[ticker] = "Both MarketData and Yahoo Finance failed to fetch options."
                 continue
 
         for p in positions:
@@ -1788,6 +1807,7 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
                             "is_safe": k_val > market_data.get(ticker, {}).get("resistance", 0)
                         }
 
+    # Only mark as fully cached if it explicitly found 0 populated contracts and loaded from cache dict
     is_cached_payload = (successful_fetches == 0 and bool(cache_store))
     payload = {
         "market": {t: market_data[t] for t in primary_tickers if t in market_data},
