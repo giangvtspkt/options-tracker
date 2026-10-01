@@ -30,7 +30,6 @@ TWILIO_SMS_FROM = os.getenv("TWILIO_SMS_FROM", TWILIO_FROM_NUMBER)
 # --- Market Data Provider (marketdata.app) Config ---
 MARKETDATA_API_TOKEN = os.getenv("MARKETDATA_API_TOKEN", "")
 MD_BASE = "https://api.marketdata.app/v1"
-# BUG FIX: Removed mode="cached" which triggers 402 errors on Free accounts
 MD_MODE = os.getenv("MD_MODE", "")
 MD_TIMEOUT = int(os.getenv("MD_TIMEOUT", "15"))
 
@@ -945,7 +944,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           }
         }
 
-        const maxPlColor = maxPl >= 0 ? 'text-emerald-700' : 'text-rose-700';
+        const maxPlColor = maxPl >= 0 ? 'textemerald-700' : 'text-rose-700';
         const curPlColor = currentPl >= 0 ? 'text-emerald-700' : 'text-rose-700';
         let curPlDisplay = '<span class="text-slate-400 font-normal">Pending</span>';
         if (isExpired || liveMark !== null) {
@@ -1609,8 +1608,10 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
                 df_clean = df_hist_1y['Close'].dropna()
                 df_clean = df_clean[df_clean > 0]
                 returns = np.log(df_clean / df_clean.shift(1)).dropna()
-                if len(returns) >= 20:
-                    rolling_vol = returns.rolling(window=20).std() * math.sqrt(252)
+                
+                # BUG FIX 2: Reduced rolling window to 10 days to make HV strictly responsive to sudden panic selloffs
+                if len(returns) >= 10:
+                    rolling_vol = returns.rolling(window=10).std() * math.sqrt(252)
                     hist_vols = [float(v) for v in rolling_vol.dropna().tolist() if not math.isnan(v) and v > 0]
         except Exception as e:
             if not use_md and is_primary: diagnostics[ticker] = f"Yahoo Spot/History blocked: {str(e)[:100]}"
@@ -1643,14 +1644,20 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
 
         if not expirations and is_primary: continue
 
+        # BUG FIX 1: Percentile Rank Math
         ticker_hv_pctile = None
         if len(hist_vols) > 0:
             window_size = max(1, iv_history_days)
             windowed_vols = hist_vols[-window_size:] if window_size > 0 else hist_vols
             if len(windowed_vols) > 0:
                 current_hv = windowed_vols[-1]
-                count_below = sum(1 for v in windowed_vols if v < current_hv)
-                ticker_hv_pctile = round((count_below / len(windowed_vols)) * 100.0, 1)
+                
+                # Using STRICT Percentile Rank formula to allow absolute maximums to hit exactly 100%
+                count_less = sum(1 for v in windowed_vols if v < current_hv)
+                if len(windowed_vols) > 1:
+                    ticker_hv_pctile = round((count_less / (len(windowed_vols) - 1)) * 100.0, 1)
+                else:
+                    ticker_hv_pctile = 100.0
 
         if df_hist is not None and not df_hist.empty and len(df_hist) >= 2:
             try:
