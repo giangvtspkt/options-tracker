@@ -715,7 +715,6 @@ HTML_CONTENT = """<!DOCTYPE html>
           
           tickerStats[tkr].total += p.qty;
           
-          // BUG FIX: Differentiate capital basis between Puts and Calls
           const capitalBasis = (p.type === 'CALL' && spot !== null && spot > 0) ? spot : p.strike;
           const contractCapital = capitalBasis * 100 * p.qty;
 
@@ -774,7 +773,6 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       const fmt = (val) => `${val >= 0 ? '+$' : '-$'}${Math.abs(val).toFixed(2)}`;
 
-      // Calculate Global Benchmark for Max Unrealized comparison across all tickers
       const allTickers = Object.keys(tickerStats).sort();
       let globalMaxUnrealAbs = 1;
       if (allTickers.length > 0) {
@@ -913,7 +911,7 @@ HTML_CONTENT = """<!DOCTYPE html>
                 alertMsg = `🚨 CRITICAL: ${p.ticker} $${p.strike} Put needs attention (ROLL / ASSIGN NOW). Spot is $${spot.toFixed(2)} (${pctFromStrike > 0 ? '+' : ''}${pctFromStrike.toFixed(1)}%).`;
               } else if (pctFromStrike <= alertCriteria.putWarnPct) {
                 statusHtml = '<span class="px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-extrabold whitespace-nowrap">ROLL SOON</span>';
-                alertMsg = `⚠️️ WARNING: ${p.ticker} $${p.strike} Put is tested (ROLL SOON). Spot is $${spot.toFixed(2)} (${pctFromStrike > 0 ? '+' : ''}${pctFromStrike.toFixed(1)}%). DTE: ${dte}d.`;
+                alertMsg = `⚠️ WARNING: ${p.ticker} $${p.strike} Put is tested (ROLL SOON). Spot is $${spot.toFixed(2)} (${pctFromStrike > 0 ? '+' : ''}${pctFromStrike.toFixed(1)}%). DTE: ${dte}d.`;
               }
             } else if (p.type === 'CALL') {
               if (spot >= p.strike) {
@@ -944,7 +942,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           }
         }
 
-        const maxPlColor = maxPl >= 0 ? 'textemerald-700' : 'text-rose-700';
+        const maxPlColor = maxPl >= 0 ? 'text-emerald-700' : 'text-rose-700';
         const curPlColor = currentPl >= 0 ? 'text-emerald-700' : 'text-rose-700';
         let curPlDisplay = '<span class="text-slate-400 font-normal">Pending</span>';
         if (isExpired || liveMark !== null) {
@@ -1109,7 +1107,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         if (!res.ok) throw new Error("API error");
         const data = await res.json();
         
-        // --- UNIVERSAL ABNORMAL DATA FIREWALL (Applied to BOTH Auto and Manual Refresh) ---
         let populatedContracts = 0;
         if (data.targets && data.puts) {
             data.targets.forEach(tgt => {
@@ -1127,9 +1124,8 @@ HTML_CONTENT = """<!DOCTYPE html>
         const isAbnormal = (data.is_cached || populatedContracts === 0);
 
         if (isAbnormal) {
-            // Update UI with precise diagnostic errors if available
             if (globalData) {
-                status.innerHTML = `<span class="text-amber-600 font-bold">⚠️ Refresh rejected (Abnormal/Empty Data from provider)</span> at ${new Date().toLocaleTimeString()}`;
+                status.innerHTML = `<span class="text-amber-600 font-bold">⚠️ Refresh rejected (Abnormal/Empty Data)</span> at ${new Date().toLocaleTimeString()}`;
                 if (data.diagnostics && Object.keys(data.diagnostics).length > 0) {
                     const diagBanner = document.getElementById('diagBanner');
                     const diagList = document.getElementById('diagList');
@@ -1143,7 +1139,6 @@ HTML_CONTENT = """<!DOCTYPE html>
                 return;
             }
 
-            // On initial load fallback to local backup if available
             const localSaved = localStorage.getItem('cached_options_payload');
             if (localSaved) {
                 const parsed = JSON.parse(localSaved);
@@ -1559,21 +1554,27 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
 
     market_data = cache_store.get("market", {}).copy()
     all_spots = cache_store.get("all_spots", {}).copy()
-    results_puts = cache_store.get("puts", {str(t): {} for t in target_periods}).copy()
-    results_calls = cache_store.get("calls", {str(t): {} for t in target_periods}).copy()
     live_positions = cache_store.get("live_positions", {}).copy()
     diagnostics = {}
+
+    # BUG FIX 1: Prevent KeyError from corrupted cache by strictly enforcing default dictionary structure
+    results_puts = cache_store.get("puts", {})
+    if not results_puts:
+        results_puts = {str(t): {} for t in target_periods}
+    else:
+        for t in target_periods:
+            if str(t) not in results_puts:
+                results_puts[str(t)] = {}
+                
+    results_calls = cache_store.get("calls", {})
+    if not results_calls:
+        results_calls = {str(t): {} for t in target_periods}
+    else:
+        for t in target_periods:
+            if str(t) not in results_calls:
+                results_calls[str(t)] = {}
     
     successful_fetches = 0
-
-    # Initialize a custom session to spoof headers for Yahoo to prevent cloud blocks
-    yf_session = requests.Session()
-    yf_session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Upgrade-Insecure-Requests": "1"
-    })
 
     for ticker in combined_ticker_list:
         is_primary = ticker in primary_tickers
@@ -1584,7 +1585,8 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
         
         use_md = (provider == "marketdata")
         
-        tkr = yf.Ticker(ticker, session=yf_session)
+        # BUG FIX 2: Removed session= kwarg to prevent TypeErrors in older cached versions of yfinance
+        tkr = yf.Ticker(ticker)
         
         # --- ISOLATED SPOT FETCH ---
         if use_md:
@@ -1609,7 +1611,6 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
                 df_clean = df_clean[df_clean > 0]
                 returns = np.log(df_clean / df_clean.shift(1)).dropna()
                 
-                # BUG FIX 2: Reduced rolling window to 10 days to make HV strictly responsive to sudden panic selloffs
                 if len(returns) >= 10:
                     rolling_vol = returns.rolling(window=10).std() * math.sqrt(252)
                     hist_vols = [float(v) for v in rolling_vol.dropna().tolist() if not math.isnan(v) and v > 0]
@@ -1644,15 +1645,12 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
 
         if not expirations and is_primary: continue
 
-        # BUG FIX 1: Percentile Rank Math
         ticker_hv_pctile = None
         if len(hist_vols) > 0:
             window_size = max(1, iv_history_days)
             windowed_vols = hist_vols[-window_size:] if window_size > 0 else hist_vols
             if len(windowed_vols) > 0:
                 current_hv = windowed_vols[-1]
-                
-                # Using STRICT Percentile Rank formula to allow absolute maximums to hit exactly 100%
                 count_less = sum(1 for v in windowed_vols if v < current_hv)
                 if len(windowed_vols) > 1:
                     ticker_hv_pctile = round((count_less / (len(windowed_vols) - 1)) * 100.0, 1)
@@ -1814,7 +1812,6 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
                             "is_safe": k_val > market_data.get(ticker, {}).get("resistance", 0)
                         }
 
-    # Only mark as fully cached if it explicitly found 0 populated contracts and loaded from cache dict
     is_cached_payload = (successful_fetches == 0 and bool(cache_store))
     payload = {
         "market": {t: market_data[t] for t in primary_tickers if t in market_data},
