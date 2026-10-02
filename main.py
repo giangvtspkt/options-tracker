@@ -185,6 +185,56 @@ HTML_CONTENT = """<!DOCTYPE html>
       </button>
     </div>
 
+    <!-- Add Position Form (MOVED HERE) -->
+    <div id="positionForm" class="hidden bg-slate-50 p-2.5 rounded-lg border border-slate-200 mb-3 space-y-2">
+      <div class="grid grid-cols-4 gap-2">
+        <div>
+          <label class="text-[10px] font-bold text-slate-500">Action</label>
+          <select id="posAction" class="w-full border rounded p-1.5 text-xs bg-white"><option value="SELL">Sell (Write)</option><option value="BUY">Buy (Long)</option></select>
+        </div>
+        <div>
+          <label class="text-[10px] font-bold text-slate-500">Type</label>
+          <select id="posType" class="w-full border rounded p-1.5 text-xs bg-white"><option value="PUT">PUT (CSP)</option><option value="CALL">CALL (CC)</option></select>
+        </div>
+        <div>
+          <label class="text-[10px] font-bold text-slate-500">Ticker</label>
+          <input id="posTicker" type="text" placeholder="IREN" class="w-full border rounded p-1.5 text-xs uppercase font-semibold">
+        </div>
+        <div>
+          <label class="text-[10px] font-bold text-slate-500">Broker</label>
+          <select id="posBroker" class="w-full border rounded p-1.5 text-xs bg-white font-semibold"><option value="moomoo">MOOMOO</option><option value="ibkr">IBKR</option></select>
+        </div>
+      </div>
+      <div class="grid grid-cols-3 gap-2">
+        <div>
+          <label class="text-[10px] font-bold text-slate-500">Strike ($)</label>
+          <input id="posStrike" type="number" step="0.5" placeholder="40" class="w-full border rounded p-1.5 text-xs">
+        </div>
+        <div>
+          <label class="text-[10px] font-bold text-slate-500">Premium ($)</label>
+          <input id="posPrem" type="number" step="0.01" placeholder="1.25" class="w-full border rounded p-1.5 text-xs">
+        </div>
+        <div>
+          <label class="text-[10px] font-bold text-slate-500">Qty</label>
+          <input id="posQty" type="number" step="1" value="1" class="w-full border rounded p-1.5 text-xs">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <label class="text-[10px] font-bold text-slate-500">Trade Day</label>
+          <input id="posTradeDate" type="date" class="w-full border rounded p-1.5 text-xs bg-white">
+        </div>
+        <div>
+          <label class="text-[10px] font-bold text-slate-500">Exp Date</label>
+          <input id="posExp" type="date" class="w-full border rounded p-1.5 text-xs bg-white">
+        </div>
+      </div>
+      <div class="flex gap-2 pt-1">
+        <button onclick="savePosition()" class="bg-emerald-600 active:bg-emerald-700 text-white font-bold py-1.5 px-3 rounded text-xs flex-1">Save</button>
+        <button onclick="toggleAddForm()" class="bg-slate-300 text-slate-700 font-bold py-1.5 px-3 rounded text-xs">Cancel</button>
+      </div>
+    </div>
+
     <!-- Collapsible Settings Panel -->
     <div id="alertSettingsPanel" class="hidden bg-slate-50 border border-slate-200 rounded-lg p-2.5 mb-3">
       <div class="flex items-center justify-between mb-2 border-b border-slate-200 pb-2">
@@ -299,56 +349,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         </div>
       </div>
       <div id="openSummaryCards" class="flex flex-wrap gap-2"></div>
-    </div>
-
-    <!-- Add Position Form -->
-    <div id="positionForm" class="hidden bg-slate-50 p-2.5 rounded-lg border border-slate-200 mb-3 space-y-2">
-      <div class="grid grid-cols-4 gap-2">
-        <div>
-          <label class="text-[10px] font-bold text-slate-500">Action</label>
-          <select id="posAction" class="w-full border rounded p-1.5 text-xs bg-white"><option value="SELL">Sell (Write)</option><option value="BUY">Buy (Long)</option></select>
-        </div>
-        <div>
-          <label class="text-[10px] font-bold text-slate-500">Type</label>
-          <select id="posType" class="w-full border rounded p-1.5 text-xs bg-white"><option value="PUT">PUT (CSP)</option><option value="CALL">CALL (CC)</option></select>
-        </div>
-        <div>
-          <label class="text-[10px] font-bold text-slate-500">Ticker</label>
-          <input id="posTicker" type="text" placeholder="IREN" class="w-full border rounded p-1.5 text-xs uppercase font-semibold">
-        </div>
-        <div>
-          <label class="text-[10px] font-bold text-slate-500">Broker</label>
-          <select id="posBroker" class="w-full border rounded p-1.5 text-xs bg-white font-semibold"><option value="moomoo">MOOMOO</option><option value="ibkr">IBKR</option></select>
-        </div>
-      </div>
-      <div class="grid grid-cols-3 gap-2">
-        <div>
-          <label class="text-[10px] font-bold text-slate-500">Strike ($)</label>
-          <input id="posStrike" type="number" step="0.5" placeholder="40" class="w-full border rounded p-1.5 text-xs">
-        </div>
-        <div>
-          <label class="text-[10px] font-bold text-slate-500">Premium ($)</label>
-          <input id="posPrem" type="number" step="0.01" placeholder="1.25" class="w-full border rounded p-1.5 text-xs">
-        </div>
-        <div>
-          <label class="text-[10px] font-bold text-slate-500">Qty</label>
-          <input id="posQty" type="number" step="1" value="1" class="w-full border rounded p-1.5 text-xs">
-        </div>
-      </div>
-      <div class="grid grid-cols-2 gap-2">
-        <div>
-          <label class="text-[10px] font-bold text-slate-500">Trade Day</label>
-          <input id="posTradeDate" type="date" class="w-full border rounded p-1.5 text-xs bg-white">
-        </div>
-        <div>
-          <label class="text-[10px] font-bold text-slate-500">Exp Date</label>
-          <input id="posExp" type="date" class="w-full border rounded p-1.5 text-xs bg-white">
-        </div>
-      </div>
-      <div class="flex gap-2 pt-1">
-        <button onclick="savePosition()" class="bg-emerald-600 active:bg-emerald-700 text-white font-bold py-1.5 px-3 rounded text-xs flex-1">Save</button>
-        <button onclick="toggleAddForm()" class="bg-slate-300 text-slate-700 font-bold py-1.5 px-3 rounded text-xs">Cancel</button>
-      </div>
     </div>
 
     <!-- Contract Positions Table -->
@@ -611,8 +611,19 @@ HTML_CONTENT = """<!DOCTYPE html>
         trade_date: document.getElementById('posTradeDate').value || new Date().toISOString().split('T')[0]
       };
       if (!p.ticker || isNaN(p.strike) || isNaN(p.prem) || !p.exp) return alert('Fill fields properly.');
+      
+      // HIDE IMMEDIATELY to prevent double clicking while fetching
+      document.getElementById('positionForm').classList.add('hidden');
+
       const res = await fetch('/api/positions', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(p) });
-      if (res.ok) { toggleAddForm(); await loadCloudPositions(); fetchData(false); }
+      if (res.ok) { 
+        await loadCloudPositions(); 
+        fetchData(false); 
+      } else {
+        // Fallback in case of server error so it can be corrected
+        document.getElementById('positionForm').classList.remove('hidden');
+        alert("Failed to save position.");
+      }
     }
 
     async function deletePosition(id) {
@@ -1557,7 +1568,6 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
     live_positions = cache_store.get("live_positions", {}).copy()
     diagnostics = {}
 
-    # BUG FIX 1: Prevent KeyError from corrupted cache by strictly enforcing default dictionary structure
     results_puts = cache_store.get("puts", {})
     if not results_puts:
         results_puts = {str(t): {} for t in target_periods}
@@ -1576,6 +1586,14 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
     
     successful_fetches = 0
 
+    yf_session = requests.Session()
+    yf_session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Upgrade-Insecure-Requests": "1"
+    })
+
     for ticker in combined_ticker_list:
         is_primary = ticker in primary_tickers
         spot_price = 0.0
@@ -1585,10 +1603,8 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
         
         use_md = (provider == "marketdata")
         
-        # BUG FIX 2: Removed session= kwarg to prevent TypeErrors in older cached versions of yfinance
         tkr = yf.Ticker(ticker)
         
-        # --- ISOLATED SPOT FETCH ---
         if use_md:
             try:
                 spot_price = md_spot(ticker)
@@ -1597,13 +1613,11 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
                 if is_primary:
                     diagnostics[ticker] = f"MarketData API Spot Check Failed: {str(e)[:100]}"
 
-        # Combine Spot fetch and Historical Vol into a single call for Yahoo to drastically reduce API requests
         try:
             df_hist_1y = tkr.history(period="1y")
             if df_hist_1y is not None and not df_hist_1y.empty and 'Close' in df_hist_1y.columns:
                 df_hist = df_hist_1y.tail(30)
                 
-                # Extract spot if we don't have it yet
                 if spot_price is None or spot_price <= 0:
                     spot_price = float(df_hist_1y['Close'].iloc[-1])
                     
@@ -1625,7 +1639,6 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
 
         all_spots[ticker] = round(spot_price, 2)
 
-        # --- ISOLATED EXPIRATIONS FETCH ---
         if use_md:
             try:
                 expirations = md_expirations(ticker)
