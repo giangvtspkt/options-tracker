@@ -185,7 +185,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       </button>
     </div>
 
-    <!-- Add Position Form (MOVED HERE) -->
+    <!-- Add Position Form -->
     <div id="positionForm" class="hidden bg-slate-50 p-2.5 rounded-lg border border-slate-200 mb-3 space-y-2">
       <div class="grid grid-cols-4 gap-2">
         <div>
@@ -288,7 +288,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           <input id="critCallHighIvPctile" type="number" step="5" class="w-full border rounded p-1.5 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
         </div>
         <div class="bg-amber-50/70 p-1.5 rounded border border-amber-200">
-          <label class="font-bold text-amber-900 block mb-0.5">⏱️ IV History (Trading Days)</label>
+          <label class="font-bold text-amber-900 block mb-0.5">⏱ IV History (Trading Days)</label>
           <input id="critIvHistoryDays" type="number" step="1" class="w-full border rounded p-1.5 text-xs bg-white font-bold" onchange="saveAlertCriteria()">
         </div>
       </div>
@@ -356,26 +356,33 @@ HTML_CONTENT = """<!DOCTYPE html>
       <table class="w-full text-left text-[10px]">
         <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold">
           <tr>
-            <th class="p-1.5 border-r p-0 text-center">
+            <th class="p-1.5 border-r p-0 text-center align-middle">
                <select id="posBrokerFilter" onchange="renderPositionsAndPL()" class="w-full bg-transparent font-bold text-slate-600 outline-none cursor-pointer px-1 py-1 text-center">
                  <option value="ALL">Broker (All)</option>
                </select>
             </th>
-            <th class="p-1.5 border-r">Pos</th>
-            <th class="p-1.5 border-r p-0">
-               <select id="posTickerFilter" onchange="renderPositionsAndPL()" class="w-full bg-transparent font-bold text-slate-600 outline-none cursor-pointer px-1 py-1">
-                 <option value="ALL">Contract (All)</option>
-               </select>
+            <th class="p-1.5 border-r align-middle">Pos</th>
+            <th class="p-0 border-r align-middle">
+               <div class="flex items-center">
+                   <select id="posTickerFilter" onchange="renderPositionsAndPL()" class="w-1/2 bg-transparent font-bold text-slate-600 outline-none cursor-pointer px-1 py-1.5 border-r border-slate-200">
+                     <option value="ALL">Ticker (All)</option>
+                   </select>
+                   <select id="posTypeFilter" onchange="renderPositionsAndPL()" class="w-1/2 bg-transparent font-bold text-slate-600 outline-none cursor-pointer px-1 py-1.5">
+                     <option value="ALL">Type (All)</option>
+                     <option value="PUT">PUT</option>
+                     <option value="CALL">CALL</option>
+                   </select>
+               </div>
             </th>
-            <th class="p-1.5 border-r text-center">Trade Day</th>
-            <th class="p-1.5 border-r text-center">Exp</th>
-            <th class="p-1.5 border-r">Entry</th>
-            <th id="thAnnPct" class="p-1.5 border-r font-extrabold text-emerald-900 bg-emerald-50/70 text-center">Ann %</th>
-            <th class="p-1.5 border-r">Live Mark</th>
-            <th class="p-1.5 border-r font-extrabold text-blue-900 bg-blue-50/70">Cur P/L ($)</th>
-            <th class="p-1.5 border-r">Max P/L ($)</th>
-            <th class="p-1.5 border-r">Status</th>
-            <th class="p-1.5 text-center">Del</th>
+            <th class="p-1.5 border-r text-center align-middle">Trade Day</th>
+            <th class="p-1.5 border-r text-center align-middle">Exp</th>
+            <th class="p-1.5 border-r align-middle">Entry</th>
+            <th id="thAnnPct" class="p-1.5 border-r font-extrabold text-emerald-900 bg-emerald-50/70 text-center align-middle">Ann %</th>
+            <th class="p-1.5 border-r align-middle">Live Mark</th>
+            <th class="p-1.5 border-r font-extrabold text-blue-900 bg-blue-50/70 align-middle">Cur P/L ($)</th>
+            <th class="p-1.5 border-r align-middle">Max P/L ($)</th>
+            <th class="p-1.5 border-r align-middle">Status</th>
+            <th class="p-1.5 text-center align-middle">Del</th>
           </tr>
         </thead>
         <tbody id="positionsBody">
@@ -650,10 +657,14 @@ HTML_CONTENT = """<!DOCTYPE html>
       const currentFilter = filterSelect ? filterSelect.value : 'ALL';
       const uniqueTickers = Array.from(new Set(cloudPositions.map(p => p.ticker))).sort();
       if (filterSelect) {
-        filterSelect.innerHTML = `<option value="ALL">Contract (All)</option>` + uniqueTickers.map(t => `<option value="${t}">${t}</option>`).join('');
+        filterSelect.innerHTML = `<option value="ALL">Ticker (All)</option>` + uniqueTickers.map(t => `<option value="${t}">${t}</option>`).join('');
         filterSelect.value = uniqueTickers.includes(currentFilter) ? currentFilter : 'ALL';
       }
       const activeFilter = filterSelect ? filterSelect.value : 'ALL';
+
+      // Setup Type Filter Dropdown
+      const typeFilterSelect = document.getElementById('posTypeFilter');
+      const activeTypeFilter = typeFilterSelect ? typeFilterSelect.value : 'ALL';
       
       const tbody = document.getElementById('positionsBody');
       const now = new Date();
@@ -849,13 +860,16 @@ HTML_CONTENT = """<!DOCTYPE html>
         });
       }
 
-      // Apply Broker & Contract Filters
+      // Apply Broker, Ticker, and Type Filters
       let visiblePositions = cloudPositions.filter(p => !hideExpired || p.exp >= todayStr);
       if (activeBrokerFilter !== 'ALL') {
         visiblePositions = visiblePositions.filter(p => (p.broker || 'moomoo').toUpperCase() === activeBrokerFilter);
       }
       if (activeFilter !== 'ALL') {
         visiblePositions = visiblePositions.filter(p => p.ticker === activeFilter);
+      }
+      if (activeTypeFilter !== 'ALL') {
+        visiblePositions = visiblePositions.filter(p => (p.type || '').toUpperCase() === activeTypeFilter);
       }
       visiblePositions.sort((a, b) => new Date(a.exp) - new Date(b.exp) || a.ticker.localeCompare(b.ticker));
       
@@ -1206,6 +1220,9 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
     }
 
+    // UPDATE AUTO-REFRESH TIMER TO 5 MINUTES
+    setInterval(checkAutoRefresh, 300000);
+
     function renderPills(tickers) {
       const pillsContainer = document.getElementById('tickerPills');
       pillsContainer.innerHTML = '';
@@ -1330,7 +1347,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       loadAlertCriteria();
       await loadCloudPositions();
       await fetchData(false);
-      setInterval(checkAutoRefresh, 180000);
     })();
   </script>
 </body>
@@ -1729,6 +1745,25 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
                 if is_primary and ticker not in diagnostics: 
                     diagnostics[ticker] = "Both MarketData and Yahoo Finance failed to fetch options."
                 continue
+
+        # --- BUG FIX: FORCE LIVE SPOT OVERRIDE ---
+        # MarketData defaults to 1-day old stock quotes for Free users unless the UTP agreement is signed.
+        # But their Options Chain data is live and includes the real-time 'underlyingPrice'.
+        # We extract it here to forcefully update the stale Spot price!
+        for exp, chain in loaded_chains.items():
+            try:
+                df_to_check = chain.puts if (chain.puts is not None and not chain.puts.empty) else chain.calls
+                if df_to_check is not None and not df_to_check.empty:
+                    if "underlyingPrice" in df_to_check.columns:
+                        live_spot = float(df_to_check["underlyingPrice"].iloc[0])
+                        if not math.isnan(live_spot) and live_spot > 0:
+                            spot_price = live_spot
+                            all_spots[ticker] = round(spot_price, 2)
+                            if is_primary and ticker in market_data:
+                                market_data[ticker]["spot"] = round(spot_price, 2)
+                            break
+            except Exception:
+                pass
 
         for p in positions:
             try:
