@@ -403,5 +403,17 @@
     "exp": "2026-11-06",
     "trade_date": "2026-09-28",
     "broker": "moomoo"
+  },
+  {
+    "id": 1790953621127,
+    "action": "SELL",
+    "type": "CALL",
+    "ticker": "AMD",
+    "strike": 720.0,
+    "prem": 19.8,
+    "qty": 2,
+    "exp": "2026-11-06",
+    "trade_date": "2026-09-22",
+    "broker": "ibkr"
   }
 ]
