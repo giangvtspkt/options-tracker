@@ -415,5 +415,17 @@
     "exp": "2026-11-06",
     "trade_date": "2026-09-24",
     "broker": "ibkr"
+  },
+  {
+    "id": 1791212471351,
+    "action": "SELL",
+    "type": "PUT",
+    "ticker": "IREN",
+    "strike": 39.0,
+    "prem": 3.44,
+    "qty": 3,
+    "exp": "2026-11-13",
+    "trade_date": "2026-10-05",
+    "broker": "ibkr"
   }
 ]
