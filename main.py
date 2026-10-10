@@ -194,7 +194,12 @@ HTML_CONTENT = """<!DOCTYPE html>
         </div>
         <div>
           <label class="text-[10px] font-bold text-slate-500">Type</label>
-          <select id="posType" class="w-full border rounded p-1.5 text-xs bg-white"><option value="PUT">PUT (CSP)</option><option value="CALL">CALL (CC)</option></select>
+          <select id="posType" onchange="updateFormUI()" class="w-full border rounded p-1.5 text-xs bg-white">
+            <option value="PUT">PUT (CSP)</option>
+            <option value="CALL">CALL (CC)</option>
+            <option value="STOCK">STOCK</option>
+            <option value="CASH">CASH</option>
+          </select>
         </div>
         <div>
           <label class="text-[10px] font-bold text-slate-500">Ticker</label>
@@ -206,25 +211,25 @@ HTML_CONTENT = """<!DOCTYPE html>
         </div>
       </div>
       <div class="grid grid-cols-3 gap-2">
-        <div>
+        <div id="colStrike">
           <label class="text-[10px] font-bold text-slate-500">Strike ($)</label>
           <input id="posStrike" type="number" step="0.5" placeholder="40" class="w-full border rounded p-1.5 text-xs">
         </div>
         <div>
-          <label class="text-[10px] font-bold text-slate-500">Premium ($)</label>
+          <label id="lblPrem" class="text-[10px] font-bold text-slate-500">Premium ($)</label>
           <input id="posPrem" type="number" step="0.01" placeholder="1.25" class="w-full border rounded p-1.5 text-xs">
         </div>
-        <div>
-          <label class="text-[10px] font-bold text-slate-500">Qty</label>
+        <div id="colQty">
+          <label id="lblQty" class="text-[10px] font-bold text-slate-500">Qty</label>
           <input id="posQty" type="number" step="1" value="1" class="w-full border rounded p-1.5 text-xs">
         </div>
       </div>
-      <div class="grid grid-cols-2 gap-2">
+      <div class="grid grid-cols-2 gap-2" id="rowDates">
         <div>
           <label class="text-[10px] font-bold text-slate-500">Trade Day</label>
           <input id="posTradeDate" type="date" class="w-full border rounded p-1.5 text-xs bg-white">
         </div>
-        <div>
+        <div id="colExp">
           <label class="text-[10px] font-bold text-slate-500">Exp Date</label>
           <input id="posExp" type="date" class="w-full border rounded p-1.5 text-xs bg-white">
         </div>
@@ -329,6 +334,33 @@ HTML_CONTENT = """<!DOCTYPE html>
       <div class="bg-slate-50 border border-slate-200 rounded-lg p-2 text-center">
         <div class="text-[10px] font-bold text-slate-500">Max Unrealized</div>
         <div id="totalMaxUnrealized" class="text-xs font-extrabold font-mono text-slate-700">$0.00</div>
+      </div>
+    </div>
+
+    <!-- NEW: Holdings & Margin Risk -->
+    <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-xs font-bold text-slate-800 flex items-center gap-1"><span>🏦</span> Holdings & Margin Risk</h2>
+      </div>
+      <div id="marginSummaryCards" class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3"></div>
+      <div class="overflow-x-auto border border-slate-200 rounded-lg">
+        <table class="w-full text-left text-[10px]">
+          <thead class="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold">
+            <tr>
+              <th class="p-1.5 border-r text-center">Broker</th>
+              <th class="p-1.5 border-r">Asset</th>
+              <th class="p-1.5 border-r">Qty</th>
+              <th class="p-1.5 border-r">Cost/Amt</th>
+              <th class="p-1.5 border-r">Mark</th>
+              <th class="p-1.5 border-r">Market Value</th>
+              <th class="p-1.5 border-r text-blue-900 bg-blue-50/70">Unrealized ($)</th>
+              <th class="p-1.5 text-center">Del</th>
+            </tr>
+          </thead>
+          <tbody id="holdingsBody">
+            <tr><td colspan="8" class="p-2 text-center text-slate-400">Loading holdings...</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
@@ -558,7 +590,6 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     function toggleAlertSettings() { document.getElementById('alertSettingsPanel').classList.toggle('hidden'); }
 
-    // Removed the transparency modifiers (/80) so sticky rows block content underneath perfectly
     const EXP_COLOR_PALETTE = ['bg-indigo-50', 'bg-amber-50', 'bg-emerald-50', 'bg-purple-50', 'bg-rose-50', 'bg-sky-50', 'bg-teal-50'];
 
     function toggleHideExpired(checked) {
@@ -573,11 +604,34 @@ HTML_CONTENT = """<!DOCTYPE html>
       return map[expKey];
     }
 
+    function updateFormUI() {
+        const type = document.getElementById('posType').value;
+        const isOpt = type === 'PUT' || type === 'CALL';
+        const isStock = type === 'STOCK';
+        
+        document.getElementById('colStrike').classList.toggle('hidden', !isOpt);
+        document.getElementById('colExp').classList.toggle('hidden', !isOpt);
+        document.getElementById('colQty').classList.toggle('hidden', type === 'CASH');
+        
+        document.getElementById('lblPrem').innerText = type === 'CASH' ? 'Balance ($)' : (isStock ? 'Avg Cost ($)' : 'Premium ($)');
+        document.getElementById('lblQty').innerText = isStock ? 'Shares' : 'Qty';
+        
+        if (type === 'CASH') {
+            document.getElementById('posTicker').value = 'USD';
+            document.getElementById('posTicker').disabled = true;
+            document.getElementById('posAction').value = 'BUY';
+        } else {
+            document.getElementById('posTicker').disabled = false;
+            if (document.getElementById('posTicker').value === 'USD') document.getElementById('posTicker').value = '';
+        }
+    }
+
     function toggleAddForm() {
       const f = document.getElementById('positionForm');
       f.classList.toggle('hidden');
       if (!f.classList.contains('hidden') && !document.getElementById('posTradeDate').value) {
         document.getElementById('posTradeDate').value = new Date().toISOString().split('T')[0];
+        updateFormUI();
       }
     }
     
@@ -605,21 +659,22 @@ HTML_CONTENT = """<!DOCTYPE html>
     }
 
     async function savePosition() {
+      const type = document.getElementById('posType').value;
       const p = {
         id: Date.now(),
         action: document.getElementById('posAction').value,
-        type: document.getElementById('posType').value,
-        ticker: document.getElementById('posTicker').value.trim().toUpperCase(),
+        type: type,
+        ticker: type === 'CASH' ? 'USD' : document.getElementById('posTicker').value.trim().toUpperCase(),
         broker: document.getElementById('posBroker').value,
-        strike: parseFloat(document.getElementById('posStrike').value),
+        strike: (type === 'STOCK' || type === 'CASH') ? 0 : parseFloat(document.getElementById('posStrike').value),
         prem: parseFloat(document.getElementById('posPrem').value),
-        qty: parseInt(document.getElementById('posQty').value) || 1,
-        exp: document.getElementById('posExp').value,
+        qty: type === 'CASH' ? 1 : (parseInt(document.getElementById('posQty').value) || 1),
+        exp: (type === 'STOCK' || type === 'CASH') ? '2099-12-31' : document.getElementById('posExp').value,
         trade_date: document.getElementById('posTradeDate').value || new Date().toISOString().split('T')[0]
       };
-      if (!p.ticker || isNaN(p.strike) || isNaN(p.prem) || !p.exp) return alert('Fill fields properly.');
       
-      // HIDE IMMEDIATELY to prevent double clicking while fetching
+      if (!p.ticker || (type !== 'STOCK' && type !== 'CASH' && isNaN(p.strike)) || isNaN(p.prem) || !p.exp) return alert('Fill fields properly.');
+      
       document.getElementById('positionForm').classList.add('hidden');
 
       const res = await fetch('/api/positions', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(p) });
@@ -627,7 +682,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         await loadCloudPositions(); 
         fetchData(false); 
       } else {
-        // Fallback in case of server error so it can be corrected
         document.getElementById('positionForm').classList.remove('hidden');
         alert("Failed to save position.");
       }
@@ -642,10 +696,17 @@ HTML_CONTENT = """<!DOCTYPE html>
     function renderPositionsAndPL() {
       document.getElementById('hideExpiredToggle').checked = hideExpired;
       
+      let holdings = [];
+      let options = [];
+      cloudPositions.forEach(p => {
+          if (p.type === 'CASH' || p.type === 'STOCK') holdings.push(p);
+          else options.push(p);
+      });
+      
       // Setup Broker Filter Dropdown
       const brokerFilterSelect = document.getElementById('posBrokerFilter');
       const currentBrokerFilter = brokerFilterSelect ? brokerFilterSelect.value : 'ALL';
-      const uniqueBrokers = Array.from(new Set(cloudPositions.map(p => (p.broker || 'moomoo').toUpperCase()))).sort();
+      const uniqueBrokers = Array.from(new Set(options.map(p => (p.broker || 'moomoo').toUpperCase()))).sort();
       if (brokerFilterSelect) {
         brokerFilterSelect.innerHTML = `<option value="ALL">Broker (All)</option>` + uniqueBrokers.map(b => `<option value="${b}">${b}</option>`).join('');
         brokerFilterSelect.value = uniqueBrokers.includes(currentBrokerFilter) ? currentBrokerFilter : 'ALL';
@@ -655,7 +716,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       // Setup Ticker Filter Dropdown
       const filterSelect = document.getElementById('posTickerFilter');
       const currentFilter = filterSelect ? filterSelect.value : 'ALL';
-      const uniqueTickers = Array.from(new Set(cloudPositions.map(p => p.ticker))).sort();
+      const uniqueTickers = Array.from(new Set(options.map(p => p.ticker))).sort();
       if (filterSelect) {
         filterSelect.innerHTML = `<option value="ALL">Ticker (All)</option>` + uniqueTickers.map(t => `<option value="${t}">${t}</option>`).join('');
         filterSelect.value = uniqueTickers.includes(currentFilter) ? currentFilter : 'ALL';
@@ -679,23 +740,13 @@ HTML_CONTENT = """<!DOCTYPE html>
       let totalOpenCount = 0, totalCspCapital = 0, moomooCspCapital = 0, ibkrCspCapital = 0;
       let totalCcStockCapital = 0, totalActiveCapital = 0, totalAnnualDollarGain = 0;
 
-      // Accumulator for per-ticker performance metrics
       const tickerStats = {};
       const initTicker = (tkr) => {
         if (!tickerStats[tkr]) {
           tickerStats[tkr] = {
-            total: 0,
-            puts: 0,
-            calls: 0,
-            cspCapital: 0,
-            ccCapital: 0,
-            activeCapital: 0,
-            annualDollarGain: 0,
-            moomooCsp: 0,
-            ibkrCsp: 0,
-            realizedPl: 0,
-            unrealizedPl: 0,
-            maxUnrealizedPl: 0
+            total: 0, puts: 0, calls: 0, cspCapital: 0, ccCapital: 0,
+            activeCapital: 0, annualDollarGain: 0, moomooCsp: 0, ibkrCsp: 0,
+            realizedPl: 0, unrealizedPl: 0, maxUnrealizedPl: 0
           };
         }
       };
@@ -705,18 +756,25 @@ HTML_CONTENT = """<!DOCTYPE html>
         if (!tkr) return;
         initTicker(tkr);
 
+        const spot = (globalData && globalData.all_spots && globalData.all_spots[tkr] !== undefined) ? globalData.all_spots[tkr] : null;
+        
+        if (p.type === 'CASH' || p.type === 'STOCK') {
+            if (p.type === 'STOCK' && spot !== null) {
+                const unPl = p.action === 'BUY' ? (p.qty * spot - p.qty * p.prem) : (p.qty * p.prem - p.qty * spot);
+                totalCurrentUnrealized += unPl;
+                tickerStats[tkr].unrealizedPl += unPl;
+            }
+            return; 
+        }
+
         const parts = (p.exp || '').split('-');
         const isExpired = p.exp < todayStr;
         const isThisMonth = (parseInt(parts[0], 10) === currentYear && parseInt(parts[1], 10) - 1 === currentMonth);
         const isLastMonth = (parseInt(parts[0], 10) === lastMonthYear && parseInt(parts[1], 10) - 1 === lastMonth);
-
-        const spot = (globalData && globalData.all_spots && globalData.all_spots[tkr] !== undefined) ? globalData.all_spots[tkr] : null;
         const liveMark = (globalData && globalData.live_positions && globalData.live_positions[`${tkr}_${(p.exp || '').trim()}_${parseFloat(p.strike).toFixed(2)}_${(p.type || '').trim().toUpperCase()}`]) || null;
 
         if (isExpired) {
-          // --- BUG FIX: ALWAYS AGGREGATE MAX P/L FOR REALIZED ---
           let closedPl = (p.action === 'SELL') ? (p.prem * 100 * p.qty) : (-p.prem * 100 * p.qty);
-          
           totalRealized += closedPl;
           tickerStats[tkr].realizedPl += closedPl;
           if (isThisMonth) thisMonthRealized += closedPl;
@@ -726,7 +784,6 @@ HTML_CONTENT = """<!DOCTYPE html>
           const broker = (p.broker || 'moomoo').toLowerCase();
           
           tickerStats[tkr].total += p.qty;
-          
           const capitalBasis = (p.type === 'CALL' && spot !== null && spot > 0) ? spot : p.strike;
           const contractCapital = capitalBasis * 100 * p.qty;
 
@@ -743,13 +800,13 @@ HTML_CONTENT = """<!DOCTYPE html>
 
           if (p.type === 'PUT') {
             tickerStats[tkr].puts += p.qty;
-            tickerStats[tkr].cspCapital += contractCapital; // For Put, contractCapital is based on strike
+            tickerStats[tkr].cspCapital += contractCapital; 
             totalCspCapital += contractCapital;
             if (broker === 'moomoo') { moomooCspCapital += contractCapital; tickerStats[tkr].moomooCsp += contractCapital; }
             else if (broker === 'ibkr') { ibkrCspCapital += contractCapital; tickerStats[tkr].ibkrCsp += contractCapital; }
           } else if (p.type === 'CALL') {
             tickerStats[tkr].calls += p.qty;
-            tickerStats[tkr].ccCapital += contractCapital; // For Call, contractCapital is based on stock value
+            tickerStats[tkr].ccCapital += contractCapital; 
             totalCcStockCapital += contractCapital;
           }
 
@@ -766,6 +823,124 @@ HTML_CONTENT = """<!DOCTYPE html>
         }
       });
 
+      // ---- Margin Calculation Engine ----
+      const brokersList = ['moomoo', 'ibkr'];
+      const marginData = {};
+      brokersList.forEach(b => marginData[b] = { cash: 0, stockVal: 0, optVal: 0, stockMM: 0, optMM: 0, stockDict: {} });
+
+      holdings.forEach(h => {
+          const b = (h.broker || 'moomoo').toLowerCase();
+          if (!marginData[b]) return;
+          if (h.type === 'CASH') {
+              marginData[b].cash += (h.action === 'SELL' ? -h.prem : h.prem);
+          } else if (h.type === 'STOCK') {
+              const spot = (globalData && globalData.all_spots && globalData.all_spots[h.ticker]) || h.prem;
+              const val = h.qty * spot;
+              if (h.action === 'BUY') {
+                  marginData[b].stockVal += val;
+                  marginData[b].stockMM += 0.25 * val;
+                  marginData[b].stockDict[h.ticker] = (marginData[b].stockDict[h.ticker] || 0) + h.qty;
+              } else {
+                  marginData[b].stockVal -= val;
+                  marginData[b].stockMM += 0.30 * val;
+                  marginData[b].stockDict[h.ticker] = (marginData[b].stockDict[h.ticker] || 0) - h.qty;
+              }
+          }
+      });
+
+      options.filter(o => o.exp >= todayStr).forEach(o => {
+          const b = (o.broker || 'moomoo').toLowerCase();
+          if (!marginData[b]) return;
+          const spot = (globalData && globalData.all_spots && globalData.all_spots[o.ticker]) || 0;
+          const liveMark = (globalData && globalData.live_positions && globalData.live_positions[`${o.ticker}_${o.exp}_${parseFloat(o.strike).toFixed(2)}_${o.type}`]) || o.prem;
+          
+          const val = o.qty * 100 * liveMark;
+          if (o.action === 'BUY') {
+              marginData[b].optVal += val;
+          } else {
+              marginData[b].optVal -= val;
+              if (spot > 0) {
+                  if (o.type === 'CALL') {
+                      const stockOwned = marginData[b].stockDict[o.ticker] || 0;
+                      const covered = Math.min(o.qty, Math.floor(Math.max(stockOwned, 0) / 100));
+                      const naked = o.qty - covered;
+                      if (covered > 0) marginData[b].stockDict[o.ticker] -= covered * 100;
+                      if (naked > 0) {
+                          const otm = Math.max(0, o.strike - spot);
+                          const mm = liveMark + Math.max(0.2 * spot - otm, 0.1 * spot);
+                          marginData[b].optMM += naked * 100 * mm;
+                      }
+                  } else if (o.type === 'PUT') {
+                      const otm = Math.max(0, spot - o.strike);
+                      const mm = liveMark + Math.max(0.2 * spot - otm, 0.1 * o.strike);
+                      marginData[b].optMM += o.qty * 100 * mm;
+                  }
+              }
+          }
+      });
+
+      const marginContainer = document.getElementById('marginSummaryCards');
+      marginContainer.innerHTML = '';
+      brokersList.forEach(b => {
+          const d = marginData[b];
+          const hasPos = holdings.some(h => (h.broker || 'moomoo').toLowerCase() === b) || options.some(o => o.exp >= todayStr && (o.broker || 'moomoo').toLowerCase() === b);
+          if (!hasPos) return;
+
+          const nlv = d.cash + d.stockVal + d.optVal;
+          const req = d.stockMM + d.optMM;
+          const excess = nlv - req;
+          const utilPct = nlv > 0 ? (req / nlv * 100) : (req > 0 ? 100 : 0);
+          
+          let riskColor = 'bg-emerald-50 border-emerald-200 text-emerald-900';
+          let riskLabel = 'SAFE';
+          if (utilPct > 80 || nlv <= 0) { riskColor = 'bg-rose-50 border-rose-300 text-rose-900'; riskLabel = 'DANGER'; }
+          else if (utilPct > 50) { riskColor = 'bg-amber-50 border-amber-300 text-amber-900'; riskLabel = 'WARNING'; }
+
+          const card = document.createElement('div');
+          card.className = `p-2.5 rounded-lg border ${riskColor} flex flex-col gap-1 shadow-sm relative overflow-hidden`;
+          card.innerHTML = `
+              <div class="absolute top-0 right-0 px-2 py-0.5 bg-white/60 border-b border-l border-current rounded-bl font-extrabold text-[9px]">${riskLabel} ${utilPct.toFixed(1)}%</div>
+              <div class="font-extrabold text-[12px] uppercase mb-1">${b} Margin Risk</div>
+              <div class="flex justify-between text-[10px]"><span class="opacity-80">Net Liq Value (NLV)</span> <span class="font-mono font-bold">$${nlv.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>
+              <div class="flex justify-between text-[10px]"><span class="opacity-80">Maint. Margin (Req)</span> <span class="font-mono font-bold text-rose-800">$${req.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>
+              <div class="flex justify-between text-[10px] border-t border-black/10 pt-1 mt-0.5"><span class="font-bold">Excess Liquidity</span> <span class="font-mono font-extrabold">${excess >= 0 ? '+' : ''}$${excess.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>
+          `;
+          marginContainer.appendChild(card);
+      });
+
+      const tbodyH = document.getElementById('holdingsBody');
+      tbodyH.innerHTML = '';
+      if (holdings.length === 0) {
+          tbodyH.innerHTML = `<tr><td colspan="8" class="p-2 text-center text-slate-400">No cash or stocks added.</td></tr>`;
+      } else {
+          holdings.forEach(h => {
+              const isCash = h.type === 'CASH';
+              const spot = isCash ? 1 : ((globalData && globalData.all_spots && globalData.all_spots[h.ticker]) || 0);
+              const curValue = isCash ? h.prem : (h.qty * spot);
+              const costValue = isCash ? h.prem : (h.qty * h.prem);
+              let unPl = 0;
+              if (!isCash) unPl = h.action === 'BUY' ? (curValue - costValue) : (costValue - curValue);
+              
+              const curBroker = (h.broker || 'moomoo').toLowerCase();
+              const brokerBadge = curBroker === 'moomoo' ? '<span class="text-orange-600 font-bold border border-orange-200 bg-white px-1 py-0.5 rounded text-[8px] leading-none">MOO</span>' : '<span class="text-blue-700 font-bold border border-blue-200 bg-white px-1 py-0.5 rounded text-[8px] leading-none">IBKR</span>';
+
+              const tr = document.createElement('tr');
+              tr.className = `border-b bg-white hover:bg-slate-50`;
+              tr.innerHTML = `
+                  <td class="p-1.5 border-r text-center">${brokerBadge}</td>
+                  <td class="p-1.5 border-r font-bold">${isCash ? '💵 CASH' : '📈 ' + h.ticker}</td>
+                  <td class="p-1.5 border-r font-mono">${isCash ? '-' : h.qty}</td>
+                  <td class="p-1.5 border-r font-mono">$${h.prem.toFixed(2)}</td>
+                  <td class="p-1.5 border-r font-mono">${isCash ? '-' : '$' + spot.toFixed(2)}</td>
+                  <td class="p-1.5 border-r font-mono font-bold text-slate-800">$${Math.abs(curValue).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}</td>
+                  <td class="p-1.5 border-r font-mono font-bold ${unPl >= 0 ? 'text-emerald-700' : 'text-rose-700'} bg-blue-50/40">${isCash ? '-' : (unPl >= 0 ? '+$' : '-$') + Math.abs(unPl).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}</td>
+                  <td class="p-1.5 text-center"><button onclick="deletePosition(${h.id})" class="text-rose-600 hover:text-rose-800 font-bold">✕</button></td>
+              `;
+              tbodyH.appendChild(tr);
+          });
+      }
+
+      // --- Summary Metrics Updates ---
       const summaryContainer = document.getElementById('openSummaryCards');
       document.getElementById('totalOpenQty').innerText = `Total Open: ${totalOpenCount}`;
       const fmtCurrency = (val) => `$${val.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
@@ -850,8 +1025,8 @@ HTML_CONTENT = """<!DOCTYPE html>
         });
       }
 
-      // Apply Broker, Ticker, and Type Filters
-      let visiblePositions = cloudPositions.filter(p => !hideExpired || p.exp >= todayStr);
+      // --- Apply Filters to Options Table ---
+      let visiblePositions = options.filter(p => !hideExpired || p.exp >= todayStr);
       if (activeBrokerFilter !== 'ALL') {
         visiblePositions = visiblePositions.filter(p => (p.broker || 'moomoo').toUpperCase() === activeBrokerFilter);
       }
@@ -881,16 +1056,13 @@ HTML_CONTENT = """<!DOCTYPE html>
         const liveMark = (globalData && globalData.live_positions && globalData.live_positions[`${p.ticker.trim().toUpperCase()}_${p.exp.trim()}_${parseFloat(p.strike).toFixed(2)}_${p.type.trim().toUpperCase()}`]) || null;
         const dte = Math.ceil((new Date(p.exp) - new Date(todayStr)) / 86400000);
 
-        // ALWAYS calculate maxPl directly from entry metrics. Never overwrite this value.
         const maxPl = (p.action === 'SELL') ? (p.prem * 100 * p.qty) : (-p.prem * 100 * p.qty);
         let currentPl = 0;
         let statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
         let alertMsg = null;
 
         if (isExpired) {
-          // --- BUG FIX: ALWAYS display MAX P/L for expired positions (premium kept) ---
           currentPl = maxPl;
-          
           if (p.action === 'SELL') {
             if (p.type === 'CALL') {
               const isAssigned = (spot !== null && spot >= p.strike);
@@ -1210,7 +1382,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
     }
 
-    // UPDATE AUTO-REFRESH TIMER TO 5 MINUTES
     setInterval(checkAutoRefresh, 300000);
 
     function renderPills(tickers) {
@@ -1600,6 +1771,8 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
     })
 
     for ticker in combined_ticker_list:
+        if ticker == "USD": continue
+        
         is_primary = ticker in primary_tickers
         spot_price = 0.0
         expirations = []
@@ -1751,6 +1924,7 @@ def get_options_data(tickers: str = "IREN, RKLB, AMD", contract_tickers: str = "
                 pass
 
         for p in positions:
+            if p.get("type", "") in ["CASH", "STOCK"]: continue
             try:
                 p_tkr, p_exp, p_type, k_target = str(p.get("ticker", "")).strip().upper(), str(p.get("exp", "")).strip(), str(p.get("type", "")).strip().upper(), float(p.get("strike", 0))
                 if p_tkr == ticker and p_exp in loaded_chains:
