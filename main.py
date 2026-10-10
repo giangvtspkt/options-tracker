@@ -372,9 +372,9 @@ HTML_CONTENT = """<!DOCTYPE html>
           <span id="totalOpenQty" class="text-[10px] font-semibold text-slate-500 bg-slate-200/70 px-1.5 py-0.5 rounded">Total Open: 0</span>
         </div>
         <div class="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
-          <span id="moomooCspCapital" class="text-orange-800 bg-orange-100 border border-orange-200 px-2 py-0.5 rounded font-bold">Moo Put Collateral: $0</span>
-          <span id="ibkrCspCapital" class="text-blue-800 bg-blue-100 border border-blue-200 px-2 py-0.5 rounded font-bold">IBKR Put Collateral: $0</span>
-          <span id="totalCspCapital" class="text-sky-800 bg-sky-100 border border-sky-300 px-2 py-0.5 rounded font-bold">Total Put Collateral: $0</span>
+          <span id="moomooCspCapital" class="text-orange-800 bg-orange-100 border border-orange-200 px-2 py-0.5 rounded font-bold">Moo Put Margin: $0</span>
+          <span id="ibkrCspCapital" class="text-blue-800 bg-blue-100 border border-blue-200 px-2 py-0.5 rounded font-bold">IBKR Put Margin: $0</span>
+          <span id="totalCspCapital" class="text-sky-800 bg-sky-100 border border-sky-300 px-2 py-0.5 rounded font-bold">Total Put Margin: $0</span>
           <span id="totalCcCapital" class="text-purple-800 bg-purple-100 border border-purple-300 px-2 py-0.5 rounded font-bold">Total CC Stock: $0</span>
           <span id="avgAnnPctBadge" class="text-emerald-900 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded font-extrabold">Avg Ann: 0.0%</span>
           <span id="estAnnualGainBadge" class="text-emerald-950 bg-emerald-200 border border-emerald-400 px-2 py-0.5 rounded font-extrabold">Est. Gain: +$0/yr</span>
@@ -408,7 +408,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             <th class="p-1.5 border-r text-center align-middle bg-slate-100">Trade Day</th>
             <th class="p-1.5 border-r text-center align-middle bg-slate-100">Exp</th>
             <th class="p-1.5 border-r align-middle bg-slate-100">Entry</th>
-            <th class="p-1.5 border-r font-extrabold text-sky-900 bg-sky-50 text-center align-middle">Collateral ($)</th>
+            <th class="p-1.5 border-r font-extrabold text-sky-900 bg-sky-50 text-center align-middle">Margin Req ($)</th>
             <th id="thAnnPct" class="p-1.5 border-r font-extrabold text-emerald-900 bg-emerald-50 text-center align-middle">Ann %</th>
             <th class="p-1.5 border-r align-middle bg-slate-100">Live Mark</th>
             <th class="p-1.5 border-r font-extrabold text-blue-900 bg-blue-50 align-middle">Cur P/L ($)</th>
@@ -703,7 +703,6 @@ HTML_CONTENT = """<!DOCTYPE html>
           else options.push(p);
       });
       
-      // Setup Broker Filter Dropdown
       const brokerFilterSelect = document.getElementById('posBrokerFilter');
       const currentBrokerFilter = brokerFilterSelect ? brokerFilterSelect.value : 'ALL';
       const uniqueBrokers = Array.from(new Set(options.map(p => (p.broker || 'moomoo').toUpperCase()))).sort();
@@ -713,7 +712,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
       const activeBrokerFilter = brokerFilterSelect ? brokerFilterSelect.value : 'ALL';
 
-      // Setup Ticker Filter Dropdown
       const filterSelect = document.getElementById('posTickerFilter');
       const currentFilter = filterSelect ? filterSelect.value : 'ALL';
       const uniqueTickers = Array.from(new Set(options.map(p => p.ticker))).sort();
@@ -723,7 +721,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
       const activeFilter = filterSelect ? filterSelect.value : 'ALL';
 
-      // Setup Type Filter Dropdown
       const typeFilterSelect = document.getElementById('posTypeFilter');
       const activeTypeFilter = typeFilterSelect ? typeFilterSelect.value : 'ALL';
       
@@ -784,8 +781,16 @@ HTML_CONTENT = """<!DOCTYPE html>
           const broker = (p.broker || 'moomoo').toLowerCase();
           
           tickerStats[tkr].total += p.qty;
-          const capitalBasis = (p.type === 'CALL' && spot !== null && spot > 0) ? spot : p.strike;
-          const contractCapital = capitalBasis * 100 * p.qty;
+          
+          let reqMarginPerShare = p.strike;
+          if (p.type === 'PUT' && spot !== null && spot > 0) {
+              let mark = liveMark !== null ? liveMark : p.prem;
+              const otm = Math.max(0, spot - p.strike);
+              reqMarginPerShare = mark + Math.max(0.2 * spot - otm, 0.1 * p.strike);
+          }
+          
+          let capBasis = (p.type === 'CALL' && spot !== null && spot > 0) ? spot : reqMarginPerShare;
+          const contractCapital = capBasis * 100 * p.qty;
 
           if (p.action === 'SELL' && p.strike > 0 && p.prem > 0) {
             let bDays = getBusinessDaysCount(p.trade_date || todayStr, p.exp);
@@ -799,16 +804,16 @@ HTML_CONTENT = """<!DOCTYPE html>
           }
 
           if (p.type === 'PUT' && p.action === 'SELL') {
-            const shortPutCollateral = p.strike * 100 * p.qty;
+            const shortPutMargin = reqMarginPerShare * 100 * p.qty;
             tickerStats[tkr].puts += p.qty;
-            tickerStats[tkr].cspCapital += shortPutCollateral; 
-            totalCspCapital += shortPutCollateral;
-            if (broker === 'moomoo') { moomooCspCapital += shortPutCollateral; tickerStats[tkr].moomooCsp += shortPutCollateral; }
-            else if (broker === 'ibkr') { ibkrCspCapital += shortPutCollateral; tickerStats[tkr].ibkrCsp += shortPutCollateral; }
+            tickerStats[tkr].cspCapital += shortPutMargin; 
+            totalCspCapital += shortPutMargin;
+            if (broker === 'moomoo') { moomooCspCapital += shortPutMargin; tickerStats[tkr].moomooCsp += shortPutMargin; }
+            else if (broker === 'ibkr') { ibkrCspCapital += shortPutMargin; tickerStats[tkr].ibkrCsp += shortPutMargin; }
           } else if (p.type === 'CALL') {
             tickerStats[tkr].calls += p.qty;
-            tickerStats[tkr].ccCapital += contractCapital; 
-            totalCcStockCapital += contractCapital;
+            tickerStats[tkr].ccCapital += (spot !== null && spot > 0) ? (spot * 100 * p.qty) : (p.strike * 100 * p.qty); 
+            totalCcStockCapital += (spot !== null && spot > 0) ? (spot * 100 * p.qty) : (p.strike * 100 * p.qty);
           }
 
           const maxPl = (p.action === 'SELL') ? (p.prem * 100 * p.qty) : (-p.prem * 100 * p.qty);
@@ -941,13 +946,12 @@ HTML_CONTENT = """<!DOCTYPE html>
           });
       }
 
-      // --- Summary Metrics Updates ---
       const summaryContainer = document.getElementById('openSummaryCards');
       document.getElementById('totalOpenQty').innerText = `Total Open: ${totalOpenCount}`;
       const fmtCurrency = (val) => `$${val.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
-      document.getElementById('moomooCspCapital').innerText = `Moo Put Collateral: ${fmtCurrency(moomooCspCapital)}`;
-      document.getElementById('ibkrCspCapital').innerText = `IBKR Put Collateral: ${fmtCurrency(ibkrCspCapital)}`;
-      document.getElementById('totalCspCapital').innerText = `Total Put Collateral: ${fmtCurrency(totalCspCapital)}`;
+      document.getElementById('moomooCspCapital').innerText = `Moo Put Margin: ${fmtCurrency(moomooCspCapital)}`;
+      document.getElementById('ibkrCspCapital').innerText = `IBKR Put Margin: ${fmtCurrency(ibkrCspCapital)}`;
+      document.getElementById('totalCspCapital').innerText = `Total Put Margin: ${fmtCurrency(totalCspCapital)}`;
       document.getElementById('totalCcCapital').innerText = `Total CC Stock: ${fmtCurrency(totalCcStockCapital)}`;
 
       const weightedAvgAnn = totalActiveCapital > 0 ? (totalAnnualDollarGain / totalActiveCapital) * 100 : 0;
@@ -1026,7 +1030,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         });
       }
 
-      // --- Apply Filters to Options Table ---
       let visiblePositions = options.filter(p => !hideExpired || p.exp >= todayStr);
       if (activeBrokerFilter !== 'ALL') {
         visiblePositions = visiblePositions.filter(p => (p.broker || 'moomoo').toUpperCase() === activeBrokerFilter);
@@ -1062,10 +1065,16 @@ HTML_CONTENT = """<!DOCTYPE html>
         let statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
         let alertMsg = null;
 
-        let collateralDisplay = '<span class="text-slate-400">-</span>';
+        let marginDisplay = '<span class="text-slate-400">-</span>';
         if (!isExpired && p.action === 'SELL' && p.type === 'PUT' && p.strike > 0) {
-          const colVal = p.strike * 100 * p.qty;
-          collateralDisplay = `<span class="font-mono font-bold text-sky-950">$${colVal.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</span>`;
+          let mark = liveMark !== null ? liveMark : p.prem;
+          let reqMargin = p.strike * 100 * p.qty; 
+          if (spot !== null && spot > 0) {
+              const otm = Math.max(0, spot - p.strike);
+              const mm = mark + Math.max(0.2 * spot - otm, 0.1 * p.strike);
+              reqMargin = mm * 100 * p.qty;
+          }
+          marginDisplay = `<span class="font-mono font-bold text-sky-950">$${reqMargin.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</span>`;
         }
 
         if (isExpired) {
@@ -1175,7 +1184,16 @@ HTML_CONTENT = """<!DOCTYPE html>
         let annDisplay = '<span class="text-slate-400">-</span>';
         if (p.action === 'SELL' && p.strike > 0 && p.prem !== undefined) {
             let bDays = getBusinessDaysCount(p.trade_date || todayStr, p.exp);
-            let capBasis = (p.type === 'CALL' && spot !== null && spot > 0) ? spot : p.strike;
+            let capBasis = p.strike;
+            
+            if (p.type === 'CALL' && spot !== null && spot > 0) {
+                capBasis = spot;
+            } else if (p.type === 'PUT' && spot !== null && spot > 0) {
+                let mark = liveMark !== null ? liveMark : p.prem;
+                const otm = Math.max(0, spot - p.strike);
+                capBasis = mark + Math.max(0.2 * spot - otm, 0.1 * p.strike);
+            }
+            
             let roc = (p.prem / capBasis) * 100;
             let annPct = (roc * 252 / bDays).toFixed(1);
             annDisplay = `<span class="text-emerald-700 font-bold">${annPct}%</span>`;
@@ -1199,7 +1217,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           <td class="p-1.5 border-r whitespace-nowrap font-mono text-[9px] text-slate-600 text-center">${tradeDateDisplay}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono text-[9px] font-bold text-slate-800 text-center">${shortDate(p.exp)}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
-          <td class="p-1.5 border-r whitespace-nowrap text-center bg-sky-50/40">${collateralDisplay}</td>
+          <td class="p-1.5 border-r whitespace-nowrap text-center bg-sky-50/40">${marginDisplay}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono text-center">${annDisplay}</td>
           <td class="p-1.5 border-r whitespace-nowrap">${markDisplay}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono font-extrabold bg-blue-50/40 ${curPlColor}">${curPlDisplay}</td>
