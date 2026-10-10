@@ -891,13 +891,15 @@ HTML_CONTENT = """<!DOCTYPE html>
         const liveMark = (globalData && globalData.live_positions && globalData.live_positions[`${p.ticker.trim().toUpperCase()}_${p.exp.trim()}_${parseFloat(p.strike).toFixed(2)}_${p.type.trim().toUpperCase()}`]) || null;
         const dte = Math.ceil((new Date(p.exp) - new Date(todayStr)) / 86400000);
 
-        let maxPl = 0, currentPl = 0, statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
+        // ALWAYS calculate maxPl directly from entry metrics. Never overwrite this value.
+        const maxPl = (p.action === 'SELL') ? (p.prem * 100 * p.qty) : (-p.prem * 100 * p.qty);
+        let currentPl = 0;
+        let statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
         let alertMsg = null;
 
         if (isExpired) {
           if (p.action === 'SELL') {
             if (p.type === 'CALL') {
-              maxPl = p.prem * 100 * p.qty;
               currentPl = maxPl;
               const isAssigned = (spot !== null && spot >= p.strike);
               statusHtml = isAssigned 
@@ -907,25 +909,22 @@ HTML_CONTENT = """<!DOCTYPE html>
               if (spot !== null) {
                 const isWin = spot >= p.strike;
                 if (isWin) { 
-                  maxPl = p.prem * 100 * p.qty; 
+                  currentPl = maxPl; 
                   statusHtml = '<span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold whitespace-nowrap">Expired (Win)</span>'; 
                 } else {
-                  maxPl = (p.prem - Math.max(p.strike - spot, 0)) * 100 * p.qty;
+                  currentPl = (p.prem - Math.max(p.strike - spot, 0)) * 100 * p.qty;
                   statusHtml = '<span class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold whitespace-nowrap">Assigned</span>';
                 }
               } else { 
-                maxPl = p.prem * 100 * p.qty; 
+                currentPl = maxPl; 
                 statusHtml = '<span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-bold whitespace-nowrap">Expired</span>'; 
               }
-              currentPl = maxPl;
             }
           } else {
-            maxPl = ((p.type === 'CALL' ? Math.max((spot || 0) - p.strike, 0) : Math.max(p.strike - (spot || 0), 0)) - p.prem) * 100 * p.qty;
+            currentPl = ((p.type === 'CALL' ? Math.max((spot || 0) - p.strike, 0) : Math.max(p.strike - (spot || 0), 0)) - p.prem) * 100 * p.qty;
             statusHtml = '<span class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-bold whitespace-nowrap">Closed</span>';
-            currentPl = maxPl;
           }
         } else {
-          maxPl = (p.action === 'SELL') ? (p.prem * 100 * p.qty) : (-p.prem * 100 * p.qty);
           if (liveMark !== null) currentPl = (p.action === 'SELL') ? (p.prem - liveMark) * 100 * p.qty : (liveMark - p.prem) * 100 * p.qty;
 
           if (p.action === 'SELL' && spot !== null) {
