@@ -499,5 +499,17 @@
     "exp": "2099-12-31",
     "trade_date": "2026-10-09",
     "broker": "ibkr"
+  },
+  {
+    "id": 1791650660370,
+    "action": "BUY",
+    "type": "STOCK",
+    "ticker": "AMD",
+    "strike": 0.0,
+    "prem": 565.65,
+    "qty": 420,
+    "exp": "2099-12-31",
+    "trade_date": "2026-10-09",
+    "broker": "ibkr"
   }
 ]
