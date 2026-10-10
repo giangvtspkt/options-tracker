@@ -523,17 +523,5 @@
     "exp": "2099-12-31",
     "trade_date": "2026-10-09",
     "broker": "ibkr"
-  },
-  {
-    "id": 1791650772667,
-    "action": "BUY",
-    "type": "CASH",
-    "ticker": "USD",
-    "strike": 0.0,
-    "prem": 15334.0,
-    "qty": 1,
-    "exp": "2099-12-31",
-    "trade_date": "2026-10-09",
-    "broker": "ibkr"
   }
 ]
