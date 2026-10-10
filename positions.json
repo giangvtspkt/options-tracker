@@ -475,5 +475,17 @@
     "exp": "2099-12-31",
     "trade_date": "2026-10-09",
     "broker": "moomoo"
+  },
+  {
+    "id": 1791650391571,
+    "action": "BUY",
+    "type": "CASH",
+    "ticker": "USD",
+    "strike": 0.0,
+    "prem": 37411.0,
+    "qty": 1,
+    "exp": "2099-12-31",
+    "trade_date": "2026-10-09",
+    "broker": "moomoo"
   }
 ]
