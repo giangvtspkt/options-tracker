@@ -337,10 +337,10 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- NEW: Holdings & Margin Risk -->
+    <!-- Holdings & Margin Risk -->
     <div class="bg-white p-3.5 rounded-xl shadow-sm mb-3 border border-slate-200">
       <div class="flex items-center justify-between mb-2">
-        <h2 class="text-xs font-bold text-slate-800 flex items-center gap-1"><span>🏦</span> Holdings & Margin Risk</h2>
+        <h2 class="text-xs font-bold text-slate-800 flex items-center gap-1"><span>🏦</span> Holdings &amp; Margin Risk</h2>
       </div>
       <div id="marginSummaryCards" class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3"></div>
       <div class="overflow-x-auto border border-slate-200 rounded-lg">
@@ -372,9 +372,9 @@ HTML_CONTENT = """<!DOCTYPE html>
           <span id="totalOpenQty" class="text-[10px] font-semibold text-slate-500 bg-slate-200/70 px-1.5 py-0.5 rounded">Total Open: 0</span>
         </div>
         <div class="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
-          <span id="moomooCspCapital" class="text-orange-800 bg-orange-100 border border-orange-200 px-2 py-0.5 rounded font-bold">Moo: $0</span>
-          <span id="ibkrCspCapital" class="text-blue-800 bg-blue-100 border border-blue-200 px-2 py-0.5 rounded font-bold">IB: $0</span>
-          <span id="totalCspCapital" class="text-sky-800 bg-sky-100 border border-sky-300 px-2 py-0.5 rounded font-bold">Total CSP: $0</span>
+          <span id="moomooCspCapital" class="text-orange-800 bg-orange-100 border border-orange-200 px-2 py-0.5 rounded font-bold">Moo Put Collateral: $0</span>
+          <span id="ibkrCspCapital" class="text-blue-800 bg-blue-100 border border-blue-200 px-2 py-0.5 rounded font-bold">IBKR Put Collateral: $0</span>
+          <span id="totalCspCapital" class="text-sky-800 bg-sky-100 border border-sky-300 px-2 py-0.5 rounded font-bold">Total Put Collateral: $0</span>
           <span id="totalCcCapital" class="text-purple-800 bg-purple-100 border border-purple-300 px-2 py-0.5 rounded font-bold">Total CC Stock: $0</span>
           <span id="avgAnnPctBadge" class="text-emerald-900 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded font-extrabold">Avg Ann: 0.0%</span>
           <span id="estAnnualGainBadge" class="text-emerald-950 bg-emerald-200 border border-emerald-400 px-2 py-0.5 rounded font-extrabold">Est. Gain: +$0/yr</span>
@@ -408,6 +408,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             <th class="p-1.5 border-r text-center align-middle bg-slate-100">Trade Day</th>
             <th class="p-1.5 border-r text-center align-middle bg-slate-100">Exp</th>
             <th class="p-1.5 border-r align-middle bg-slate-100">Entry</th>
+            <th class="p-1.5 border-r font-extrabold text-sky-900 bg-sky-50 text-center align-middle">Collateral ($)</th>
             <th id="thAnnPct" class="p-1.5 border-r font-extrabold text-emerald-900 bg-emerald-50 text-center align-middle">Ann %</th>
             <th class="p-1.5 border-r align-middle bg-slate-100">Live Mark</th>
             <th class="p-1.5 border-r font-extrabold text-blue-900 bg-blue-50 align-middle">Cur P/L ($)</th>
@@ -417,7 +418,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           </tr>
         </thead>
         <tbody id="positionsBody">
-          <tr><td colspan="10" class="p-2 text-center text-slate-400">Loading positions...</td></tr>
+          <tr><td colspan="11" class="p-2 text-center text-slate-400">Loading positions...</td></tr>
         </tbody>
       </table>
     </div>
@@ -517,7 +518,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     let hideExpired = localStorage.getItem('hideExpiredContracts') === 'true';
     let hasLoadedOnce = false;
 
-    // Default password for editing features. Change this to whatever you want.
     const APP_PASSWORD = "admin"; 
 
     function checkAuth() {
@@ -798,12 +798,13 @@ HTML_CONTENT = """<!DOCTYPE html>
             tickerStats[tkr].annualDollarGain += annDollarGain;
           }
 
-          if (p.type === 'PUT') {
+          if (p.type === 'PUT' && p.action === 'SELL') {
+            const shortPutCollateral = p.strike * 100 * p.qty;
             tickerStats[tkr].puts += p.qty;
-            tickerStats[tkr].cspCapital += contractCapital; 
-            totalCspCapital += contractCapital;
-            if (broker === 'moomoo') { moomooCspCapital += contractCapital; tickerStats[tkr].moomooCsp += contractCapital; }
-            else if (broker === 'ibkr') { ibkrCspCapital += contractCapital; tickerStats[tkr].ibkrCsp += contractCapital; }
+            tickerStats[tkr].cspCapital += shortPutCollateral; 
+            totalCspCapital += shortPutCollateral;
+            if (broker === 'moomoo') { moomooCspCapital += shortPutCollateral; tickerStats[tkr].moomooCsp += shortPutCollateral; }
+            else if (broker === 'ibkr') { ibkrCspCapital += shortPutCollateral; tickerStats[tkr].ibkrCsp += shortPutCollateral; }
           } else if (p.type === 'CALL') {
             tickerStats[tkr].calls += p.qty;
             tickerStats[tkr].ccCapital += contractCapital; 
@@ -944,9 +945,9 @@ HTML_CONTENT = """<!DOCTYPE html>
       const summaryContainer = document.getElementById('openSummaryCards');
       document.getElementById('totalOpenQty').innerText = `Total Open: ${totalOpenCount}`;
       const fmtCurrency = (val) => `$${val.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
-      document.getElementById('moomooCspCapital').innerText = `Moo: ${fmtCurrency(moomooCspCapital)}`;
-      document.getElementById('ibkrCspCapital').innerText = `IB: ${fmtCurrency(ibkrCspCapital)}`;
-      document.getElementById('totalCspCapital').innerText = `Total CSP: ${fmtCurrency(totalCspCapital)}`;
+      document.getElementById('moomooCspCapital').innerText = `Moo Put Collateral: ${fmtCurrency(moomooCspCapital)}`;
+      document.getElementById('ibkrCspCapital').innerText = `IBKR Put Collateral: ${fmtCurrency(ibkrCspCapital)}`;
+      document.getElementById('totalCspCapital').innerText = `Total Put Collateral: ${fmtCurrency(totalCspCapital)}`;
       document.getElementById('totalCcCapital').innerText = `Total CC Stock: ${fmtCurrency(totalCcStockCapital)}`;
 
       const weightedAvgAnn = totalActiveCapital > 0 ? (totalAnnualDollarGain / totalActiveCapital) * 100 : 0;
@@ -1038,7 +1039,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
       visiblePositions.sort((a, b) => new Date(a.exp) - new Date(b.exp) || a.ticker.localeCompare(b.ticker));
       
-      if (visiblePositions.length === 0) tbody.innerHTML = `<tr><td colspan="10" class="p-2 text-center text-slate-400">No active positions found.</td></tr>`;
+      if (visiblePositions.length === 0) tbody.innerHTML = `<tr><td colspan="11" class="p-2 text-center text-slate-400">No active positions found.</td></tr>`;
       else tbody.innerHTML = '';
 
       const posColorMap = {};
@@ -1060,6 +1061,12 @@ HTML_CONTENT = """<!DOCTYPE html>
         let currentPl = 0;
         let statusHtml = '<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">Active</span>';
         let alertMsg = null;
+
+        let collateralDisplay = '<span class="text-slate-400">-</span>';
+        if (!isExpired && p.action === 'SELL' && p.type === 'PUT' && p.strike > 0) {
+          const colVal = p.strike * 100 * p.qty;
+          collateralDisplay = `<span class="font-mono font-bold text-sky-950">$${colVal.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</span>`;
+        }
 
         if (isExpired) {
           currentPl = maxPl;
@@ -1192,6 +1199,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           <td class="p-1.5 border-r whitespace-nowrap font-mono text-[9px] text-slate-600 text-center">${tradeDateDisplay}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono text-[9px] font-bold text-slate-800 text-center">${shortDate(p.exp)}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono">$${p.prem.toFixed(2)}</td>
+          <td class="p-1.5 border-r whitespace-nowrap text-center bg-sky-50/40">${collateralDisplay}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono text-center">${annDisplay}</td>
           <td class="p-1.5 border-r whitespace-nowrap">${markDisplay}</td>
           <td class="p-1.5 border-r whitespace-nowrap font-mono font-extrabold bg-blue-50/40 ${curPlColor}">${curPlDisplay}</td>
@@ -1289,7 +1297,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       const contractTickers = Array.from(new Set(cloudPositions.map(p => (p.ticker || '').trim().toUpperCase()))).filter(Boolean);
 
       try {
-        fetchFearGreed(); // Fetch sentiment concurrently
+        fetchFearGreed();
         const res = await fetch(`/api/data?tickers=${encodeURIComponent(tickers)}&contract_tickers=${encodeURIComponent(contractTickers.join(','))}&delta=${delta}&provider=${providerInput}&iv_history_days=${alertCriteria.ivHistoryDays}`);
         if (!res.ok) throw new Error("API error");
         const data = await res.json();
@@ -1559,7 +1567,6 @@ def get_fear_greed():
     except Exception:
         return {"status": "error"}
 
-# --- Twilio Alert Endpoint (SMS & WhatsApp Ready) ---
 @app.post("/api/whatsapp")
 def send_alert(payload: AlertPayload):
     account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
@@ -1622,9 +1629,7 @@ def send_alert(payload: AlertPayload):
         print(f"❌ Request Error: {error_msg}")
         return {"status": "error", "detail": error_msg}
 
-# --- marketdata.app provider (Trader plan: real-time options, hosted REST) ---
 def md_request(path, params=None):
-    """GET a marketdata.app endpoint. Returns decoded JSON; raises on clear errors."""
     url = f"{MD_BASE}{path}"
     headers = {}
     if MARKETDATA_API_TOKEN and MARKETDATA_API_TOKEN.strip():
@@ -1648,7 +1653,6 @@ def md_request(path, params=None):
         raise RuntimeError(str(e))
 
 def md_expirations(ticker):
-    """Return ['YYYY-MM-DD', ...] expirations for ticker."""
     data = md_request(f"/options/expirations/{ticker}/")
     exps = []
     for e in data.get("expirations", []) or []:
@@ -1670,14 +1674,12 @@ def md_expirations(ticker):
     return exps
 
 def md_spot(ticker):
-    """Return last spot price for ticker, or 0.0."""
     data = md_request(f"/stocks/quotes/{ticker}/")
     last = (data.get("last") or [0])[0]
     try: return float(last)
     except Exception: return 0.0
 
 def _md_chain_df(data):
-    """Convert marketdata.app columnar chain JSON into a yfinance-shaped DataFrame."""
     cols = {k: v for k, v in data.items() if isinstance(v, list)}
     df = pd.DataFrame(cols)
     if df.empty: return df
@@ -1688,7 +1690,6 @@ def _md_chain_df(data):
     return df
 
 def md_chain(ticker, expiration):
-    """Return SimpleNamespace(calls=DataFrame, puts=DataFrame), like yf option_chain()."""
     base = {"expiration": expiration}
     if MD_MODE:
         base["mode"] = MD_MODE
@@ -1712,7 +1713,6 @@ def md_chain(ticker, expiration):
     return SimpleNamespace(calls=calls, puts=puts)
 
 def _native_delta(row, bs_delta):
-    """Prefer the provider's native delta when present; else the Black-Scholes value."""
     try:
         d = row.get("delta")
         if d is not None:
