@@ -487,5 +487,17 @@
     "exp": "2099-12-31",
     "trade_date": "2026-10-09",
     "broker": "moomoo"
+  },
+  {
+    "id": 1791650614270,
+    "action": "BUY",
+    "type": "STOCK",
+    "ticker": "IREN",
+    "strike": 0.0,
+    "prem": 36.92,
+    "qty": 1500,
+    "exp": "2099-12-31",
+    "trade_date": "2026-10-09",
+    "broker": "ibkr"
   }
 ]
